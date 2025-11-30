@@ -1,0 +1,57 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "T:\\Repos\\Godot4.5ChatGPTCodexTest\\codex-game\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{AF618E55-C0A8-4F00-BB46-0EB55A0072C3}|CodexGame.csproj|t:\\repos\\godot4.5chatgptcodextest\\codex-game\\newscript.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{AF618E55-C0A8-4F00-BB46-0EB55A0072C3}|CodexGame.csproj|solutionrelative:newscript.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 0,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": 4,
+          "Children": [
+            {
+              "$type": "Bookmark",
+              "Name": "ST:128:0:{116d2292-e37d-41cd-a077-ebacac4c8cc4}"
+            },
+            {
+              "$type": "Bookmark",
+              "Name": "ST:129:0:{116d2292-e37d-41cd-a077-ebacac4c8cc4}"
+            },
+            {
+              "$type": "Bookmark",
+              "Name": "ST:0:0:{1c4feeaa-4718-4aa9-859d-94ce25d182ba}"
+            },
+            {
+              "$type": "Bookmark",
+              "Name": "ST:0:0:{aa2115a1-9712-457b-9047-dbb71ca2cdd2}"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "NewScript.cs",
+              "DocumentMoniker": "T:\\Repos\\Godot4.5ChatGPTCodexTest\\codex-game\\NewScript.cs",
+              "RelativeDocumentMoniker": "NewScript.cs",
+              "ToolTip": "T:\\Repos\\Godot4.5ChatGPTCodexTest\\codex-game\\NewScript.cs",
+              "RelativeToolTip": "NewScript.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-11-30T20:43:12.116Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Bookmark",
+              "Name": "ST:0:0:{56df62a4-05a3-4e5b-aa1a-99371ccfb997}"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
