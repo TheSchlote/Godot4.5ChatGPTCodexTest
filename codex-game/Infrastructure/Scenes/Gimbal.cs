@@ -34,8 +34,16 @@ public partial class Gimbal : Node3D
         if (@event is InputEventMouseButton mb && mb.Pressed)
         {
             if (mb.ButtonIndex == MouseButton.Right) _rotating = true;
-            if (mb.ButtonIndex == MouseButton.WheelUp) _distance = Mathf.Clamp(_distance - ZoomStep, MinDistance, MaxDistance);
-            if (mb.ButtonIndex == MouseButton.WheelDown) _distance = Mathf.Clamp(_distance + ZoomStep, MinDistance, MaxDistance);
+            if (mb.ButtonIndex == MouseButton.WheelUp)
+            {
+                _distance = Mathf.Clamp(_distance - ZoomStep, MinDistance, MaxDistance);
+                UpdateTransform();
+            }
+            if (mb.ButtonIndex == MouseButton.WheelDown)
+            {
+                _distance = Mathf.Clamp(_distance + ZoomStep, MinDistance, MaxDistance);
+                UpdateTransform();
+            }
         }
         else if (@event is InputEventMouseButton mbUp && !mbUp.Pressed && mbUp.ButtonIndex == MouseButton.Right)
         {

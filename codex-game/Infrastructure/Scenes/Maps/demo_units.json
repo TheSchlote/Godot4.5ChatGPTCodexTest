@@ -1,0 +1,64 @@
+{
+  "units": [
+    {
+      "id": "Player",
+      "name": "Pyreblade",
+      "team": 0,
+      "affinity": "Fire",
+      "stats": {
+        "maxHP": 30,
+        "maxMP": 10,
+        "physicalAttack": 15,
+        "specialAttack": 5,
+        "physicalDefense": 8,
+        "specialDefense": 6,
+        "speed": 12
+      },
+      "moveRange": 4,
+      "abilities": [ "basic_attack" ],
+      "qte": { "type": "TimingBar", "difficulty": 1.0, "critWindow": 0.15 },
+      "color": { "r": 0.2, "g": 0.7, "b": 1.0, "a": 1.0 },
+      "spawn": { "x": 1, "y": 1 }
+    },
+    {
+      "id": "AllyTwo",
+      "name": "Vanguard",
+      "team": 1,
+      "affinity": "Earth",
+      "stats": {
+        "maxHP": 32,
+        "maxMP": 12,
+        "physicalAttack": 12,
+        "specialAttack": 6,
+        "physicalDefense": 9,
+        "specialDefense": 7,
+        "speed": 11
+      },
+      "moveRange": 4,
+      "abilities": [ "basic_attack" ],
+      "qte": { "type": "TimingBar", "difficulty": 1.0, "critWindow": 0.12 },
+      "color": { "r": 0.9, "g": 0.55, "b": 0.25, "a": 1.0 },
+      "spawn": { "x": 1, "y": 6 }
+    },
+    {
+      "id": "EnemyAI",
+      "name": "Tideguard",
+      "team": 2,
+      "affinity": "Water",
+      "stats": {
+        "maxHP": 25,
+        "maxMP": 8,
+        "physicalAttack": 10,
+        "specialAttack": 4,
+        "physicalDefense": 7,
+        "specialDefense": 5,
+        "speed": 10
+      },
+      "moveRange": 3,
+      "abilities": [ "basic_attack" ],
+      "qte": { "type": "TimingBar", "difficulty": 1.1, "critWindow": 0.1 },
+      "color": { "r": 1.0, "g": 0.4, "b": 0.2, "a": 1.0 },
+      "spawn": { "x": 6, "y": 6 }
+    }
+  ]
+}

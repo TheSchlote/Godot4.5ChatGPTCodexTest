@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -36,12 +37,64 @@ public sealed class TurnQueue
             meter.ConsumeTurn();
     }
 
+    public void Remove(string unitId)
+    {
+        if (_meters.ContainsKey(unitId))
+            _meters.Remove(unitId);
+    }
+
     public IReadOnlyList<TurnOrderEntry> GetOrderSnapshot()
     {
         return _meters.Values
             .OrderByDescending(m => m.TurnValue)
             .Select(m => new TurnOrderEntry(m.UnitId, m.TurnValue, m.IsReady))
             .ToList();
+    }
+
+    public IReadOnlyList<TurnOrderEntry> PredictOrder(int count)
+    {
+        var states = _meters.Values.Select(m => m.Snapshot()).ToList();
+        var order = new List<TurnOrderEntry>(count);
+
+        while (order.Count < count && states.Count > 0)
+        {
+            var ready = states
+                .Where(s => s.TurnValue >= s.Threshold)
+                .OrderByDescending(s => s.TurnValue)
+                .FirstOrDefault();
+
+            if (!string.IsNullOrEmpty(ready.UnitId))
+            {
+                order.Add(new TurnOrderEntry(ready.UnitId, ready.TurnValue, true));
+                var idx = states.FindIndex(s => s.UnitId == ready.UnitId);
+                if (idx >= 0) states[idx] = states[idx] with { TurnValue = 0 };
+                continue;
+            }
+
+            var minSteps = float.MaxValue;
+            foreach (var state in states)
+            {
+                var remaining = state.Threshold - state.TurnValue;
+                var step = state.Speed * state.TurnRateConstant;
+                if (step <= 0) continue;
+                var steps = remaining / step;
+                if (steps > 0 && steps < minSteps)
+                    minSteps = steps;
+            }
+
+            if (minSteps == float.MaxValue)
+                break;
+
+            var stepCount = (int)MathF.Ceiling(minSteps);
+            for (int i = 0; i < states.Count; i++)
+            {
+                var state = states[i];
+                var advance = state.Speed * state.TurnRateConstant * stepCount;
+                states[i] = state with { TurnValue = state.TurnValue + advance };
+            }
+        }
+
+        return order;
     }
 
     /// <summary>

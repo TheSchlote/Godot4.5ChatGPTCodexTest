@@ -21,6 +21,9 @@ public partial class SelectionCursor : Node3D
     private bool _shouldSnap;
     private bool _followCamera = true;
     private bool _manualInput;
+    private MeshInstance3D? _indicatorMesh;
+    private Color _normalColor = new Color(0.9f, 0.9f, 0.2f);
+    private Color _occupiedColor = new Color(0.35f, 0.8f, 1.0f);
 
     public override void _Ready()
     {
@@ -35,6 +38,16 @@ public partial class SelectionCursor : Node3D
         if (Input.IsActionJustPressed("ui_accept"))
             GD.Print("Cursor is on tile: " + PositionToCell(Position));
     }
+
+    public void RegisterIndicatorMesh(MeshInstance3D mesh, Color normalColor, Color occupiedColor)
+    {
+        _indicatorMesh = mesh;
+        _normalColor = normalColor;
+        _occupiedColor = occupiedColor;
+        ApplyIndicatorColor(_normalColor);
+    }
+
+    public void SetOccupied(bool occupied) => ApplyIndicatorColor(occupied ? _occupiedColor : _normalColor);
 
     private void HandleInput(double delta)
     {
@@ -160,4 +173,12 @@ public partial class SelectionCursor : Node3D
     }
 
     public Vector3 GetSelectedTile() => _targetGridPosition;
+
+    private void ApplyIndicatorColor(Color color)
+    {
+        if (_indicatorMesh?.MaterialOverride is StandardMaterial3D mat)
+        {
+            mat.AlbedoColor = color;
+        }
+    }
 }

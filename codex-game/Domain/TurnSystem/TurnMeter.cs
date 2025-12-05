@@ -23,4 +23,8 @@ public sealed class TurnMeter
     public bool IsReady => TurnValue >= Threshold;
 
     public void ConsumeTurn() => TurnValue = 0;
+
+    public TurnMeterState Snapshot() => new(UnitId, TurnValue, Speed, Threshold, TurnRateConstant);
 }
+
+public readonly record struct TurnMeterState(string UnitId, float TurnValue, int Speed, int Threshold, float TurnRateConstant);

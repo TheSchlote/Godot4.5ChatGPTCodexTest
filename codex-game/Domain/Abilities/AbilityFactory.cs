@@ -16,7 +16,7 @@ public static class AbilityFactory
             aoe: new AreaPattern(AreaShape.Single, 1),
             element: Element.Neutral,
             qte: QTEType.TimingBar,
-            damageFormula: ctx => new AbilityResult(calculator.Calculate(ctx), ConsumedTurn: true),
+            damageFormula: ctx => new AbilityResult(calculator.Calculate(ctx), ConsumedTurn: true, QTEResult: ctx.QTEResult),
             tags: new[] { AbilityTag.Knockback });
     }
 }

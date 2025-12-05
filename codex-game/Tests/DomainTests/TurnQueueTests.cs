@@ -75,4 +75,23 @@ public class TurnQueueTests
         var snapshot = queue.GetOrderSnapshot();
         Assert.That(snapshot[0].IsReady, Is.True);
     }
+
+    [Test]
+    public void PredictOrder_UsesCurrentMetersToProjectUpcomingTurns()
+    {
+        var queue = new TurnQueue();
+        queue.Register(new TurnMeter("fast", 400, threshold: 1000));
+        queue.Register(new TurnMeter("slow", 200, threshold: 1000));
+
+        // Advance some steps to create differing turn values.
+        queue.AdvanceUntilReady(); // fast 400, slow 200
+
+        var predicted = queue.PredictOrder(3);
+
+        Assert.That(predicted, Has.Count.EqualTo(3));
+        Assert.That(predicted[0].UnitId, Is.EqualTo("fast"));
+        Assert.That(predicted[1].UnitId, Is.EqualTo("slow"));
+        Assert.That(predicted[2].UnitId, Is.EqualTo("fast"));
+        Assert.That(predicted[0].IsReady, Is.True);
+    }
 }

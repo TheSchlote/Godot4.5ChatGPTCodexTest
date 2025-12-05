@@ -70,6 +70,15 @@ public partial class BattleManager : Node
     public void ConsumeTurn(string unitId) => _turnQueue.Consume(unitId);
 
     public IReadOnlyList<TurnOrderEntry> GetTurnOrderSnapshot() => _turnQueue.GetOrderSnapshot();
+    public IReadOnlyList<TurnOrderEntry> GetPredictedTurnOrder(int count) => _turnQueue.PredictOrder(count);
+
+    public bool TryGetUnit(string unitId, out UnitState? state) => _units.TryGetValue(unitId, out state);
+
+    public void RemoveUnit(string unitId)
+    {
+        _units.Remove(unitId);
+        _turnQueue.Remove(unitId);
+    }
 
     private void RegisterDefaultContent()
     {
