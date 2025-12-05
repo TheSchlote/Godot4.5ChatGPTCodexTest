@@ -25,6 +25,13 @@ public partial class SelectionCursor : Node3D
     private Color _normalColor = new Color(0.9f, 0.9f, 0.2f);
     private Color _occupiedColor = new Color(0.35f, 0.8f, 1.0f);
 
+    public bool InputEnabled { get; set; } = true;
+    public void SyncToCameraLook()
+    {
+        if (Camera is null) return;
+        FollowCameraLook(Camera);
+    }
+
     public override void _Ready()
     {
         _targetGridPosition = Position;
@@ -32,6 +39,7 @@ public partial class SelectionCursor : Node3D
 
     public override void _Process(double delta)
     {
+        if (!InputEnabled) return;
         HandleInput(delta);
         MoveCursor(delta);
 
@@ -80,14 +88,12 @@ public partial class SelectionCursor : Node3D
         var forward = -basis.Z.Normalized();
         var right = basis.X.Normalized();
 
-        var dir = Vector3.Zero;
-        if (Input.IsActionPressed("ui_right")) dir += right;
-        if (Input.IsActionPressed("ui_left")) dir -= right;
-        if (Input.IsActionPressed("ui_down")) dir += forward;
-        if (Input.IsActionPressed("ui_up")) dir -= forward;
+        var horiz = Input.GetActionStrength("ui_right") - Input.GetActionStrength("ui_left");
+        var vert = Input.GetActionStrength("ui_up") - Input.GetActionStrength("ui_down");
 
+        var dir = right * horiz + forward * vert;
         dir.Y = 0;
-        return dir.Normalized();
+        return dir.LengthSquared() < 0.001f ? Vector3.Zero : dir.Normalized();
     }
 
     private void HandleSnapTimer(double delta)

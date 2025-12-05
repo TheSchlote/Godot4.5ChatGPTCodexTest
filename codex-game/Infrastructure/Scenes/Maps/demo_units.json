@@ -15,7 +15,7 @@
         "speed": 12
       },
       "moveRange": 4,
-      "abilities": [ "basic_attack" ],
+      "abilities": [ "basic_attack", "ranged_shot" ],
       "qte": { "type": "TimingBar", "difficulty": 1.0, "critWindow": 0.15 },
       "color": { "r": 0.2, "g": 0.7, "b": 1.0, "a": 1.0 },
       "spawn": { "x": 1, "y": 1 }

@@ -1,6 +1,23 @@
-[gd_scene load_steps=2 format=3 uid="uid://gaiffqpfi0wv"]
+[gd_scene load_steps=3 format=3 uid="uid://gaiffqpfi0wv"]
 
 [ext_resource type="Script" uid="uid://dxitqs8dt87xl" path="res://Infrastructure/Scenes/BattleSceneRoot.cs" id="1_5jxd7"]
+[ext_resource type="PackedScene" uid="uid://bpjfbrl2eqlqj" path="res://Infrastructure/Scenes/BattleCameraRig.tscn" id="3_ccuv7"]
 
-[node name="Node3D" type="Node3D"]
+[node name="BattleSceneRoot" type="Node3D" node_paths=PackedStringArray("MapRoot", "UnitsRoot", "BattleUiRoot", "GimbalNode")]
 script = ExtResource("1_5jxd7")
+MapRoot = NodePath("MapRoot")
+UnitsRoot = NodePath("UnitsRoot")
+BattleUiRoot = NodePath("BattleUI")
+GimbalNode = NodePath("Gimbal")
+
+[node name="BattleUI" type="Control" parent="."]
+layout_mode = 3
+anchors_preset = 0
+offset_right = 40.0
+offset_bottom = 40.0
+
+[node name="Gimbal" parent="." instance=ExtResource("3_ccuv7")]
+
+[node name="UnitsRoot" type="Node3D" parent="."]
+
+[node name="MapRoot" type="Node3D" parent="."]

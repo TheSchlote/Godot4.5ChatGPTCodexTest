@@ -13,6 +13,8 @@ public partial class Gimbal : Node3D
     [Export] public float MinDistance { get; set; } = 8f;
     [Export] public float MaxDistance { get; set; } = 40f;
     [Export] public float FollowLerp { get; set; } = 1.2f;
+    [Export] public float StickRotateSpeed { get; set; } = 1.5f;
+    public bool InputEnabled { get; set; } = true;
 
     public Camera3D? Camera { get; private set; }
 
@@ -60,8 +62,11 @@ public partial class Gimbal : Node3D
 
     public override void _Process(double delta)
     {
+        if (!InputEnabled) return;
         HandleMovement(delta);
         HandleFollow(delta);
+        HandleStickRotation(delta);
+        HandleZoom(delta);
     }
 
     private void HandleMovement(double delta)
@@ -92,6 +97,25 @@ public partial class Gimbal : Node3D
     {
         if (_followTarget is null) return;
         GlobalPosition = GlobalPosition.Lerp(_followTarget.GlobalPosition, Mathf.Clamp((float)delta * FollowLerp, 0, 1));
+        UpdateTransform();
+    }
+
+    private void HandleStickRotation(double delta)
+    {
+        var rotateX = Input.GetActionStrength("cam_rotate_right") - Input.GetActionStrength("cam_rotate_left");
+        var rotateY = Input.GetActionStrength("cam_rotate_up") - Input.GetActionStrength("cam_rotate_down");
+        if (Mathf.Abs(rotateX) < 0.05f && Mathf.Abs(rotateY) < 0.05f) return;
+
+        _yaw -= rotateX * StickRotateSpeed * (float)delta;
+        _pitch = Mathf.Clamp(_pitch - rotateY * StickRotateSpeed * (float)delta, -1.2f, -0.1f);
+        UpdateTransform();
+    }
+
+    private void HandleZoom(double delta)
+    {
+        var zoomInput = Input.GetActionStrength("cam_zoom_in") - Input.GetActionStrength("cam_zoom_out");
+        if (Mathf.Abs(zoomInput) < 0.05f) return;
+        _distance = Mathf.Clamp(_distance - zoomInput * ZoomStep * (float)delta * 5f, MinDistance, MaxDistance);
         UpdateTransform();
     }
 

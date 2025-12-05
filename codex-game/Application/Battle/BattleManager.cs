@@ -73,6 +73,19 @@ public partial class BattleManager : Node
     public IReadOnlyList<TurnOrderEntry> GetPredictedTurnOrder(int count) => _turnQueue.PredictOrder(count);
 
     public bool TryGetUnit(string unitId, out UnitState? state) => _units.TryGetValue(unitId, out state);
+    public bool TryGetAbility(string abilityId, out Ability ability)
+    {
+        try
+        {
+            ability = _abilityCatalog.Get(abilityId);
+            return true;
+        }
+        catch
+        {
+            ability = null!;
+            return false;
+        }
+    }
 
     public void RemoveUnit(string unitId)
     {
@@ -84,5 +97,6 @@ public partial class BattleManager : Node
     {
         var adapter = new DamageCalculatorAdapter(_damageCalculator.CalculateDamage);
         RegisterAbility(AbilityFactory.BasicAttack(adapter));
+        RegisterAbility(AbilityFactory.RangedShot(adapter));
     }
 }

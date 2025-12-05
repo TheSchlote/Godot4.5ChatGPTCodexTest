@@ -19,6 +19,20 @@ public static class AbilityFactory
             damageFormula: ctx => new AbilityResult(calculator.Calculate(ctx), ConsumedTurn: true, QTEResult: ctx.QTEResult),
             tags: new[] { AbilityTag.Knockback });
     }
+
+    public static Ability RangedShot(DamageCalculatorAdapter calculator)
+    {
+        return new Ability(
+            id: "ranged_shot",
+            name: "Ranged Shot",
+            mpCost: 0,
+            range: new RangePattern(RangeShape.Single, 1, 3),
+            aoe: new AreaPattern(AreaShape.Single, 1),
+            element: Element.Neutral,
+            qte: QTEType.TimingBar,
+            damageFormula: ctx => new AbilityResult(calculator.Calculate(ctx), ConsumedTurn: true, QTEResult: ctx.QTEResult),
+            tags: Array.Empty<AbilityTag>());
+    }
 }
 
 /// <summary>

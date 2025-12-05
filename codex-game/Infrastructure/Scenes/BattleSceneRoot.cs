@@ -1,142 +1,91 @@
 using CodexGame.Application.Battle;
 using CodexGame.Domain.QTE;
-using CodexGame.Domain.Stats;
 using CodexGame.Domain.Maps;
 using CodexGame.Domain.Units;
 using CodexGame.Infrastructure.Pathfinding;
 using Godot;
-using System.Linq;
 using System.Collections.Generic;
+using System.Linq;
+using CodexGame.Domain.Abilities;
 
 namespace CodexGame.Infrastructure.Scenes;
 
 /// <summary>
-/// Minimal scene entry that wires Godot nodes to the domain battle manager.
+/// Scene entry that wires Godot nodes to the domain battle manager.
+/// Now delegates unit presentation, movement, and AI to focused helpers.
 /// </summary>
 public partial class BattleSceneRoot : Node3D
 {
-    private enum BattlePhase
-    {
-        Idle,
-        Moving,
-        Qte,
-        Ended
-    }
+    [Export] public Node3D? MapRoot { get; set; }
+    [Export] public Node3D? UnitsRoot { get; set; }
+    [Export] public Control? BattleUiRoot { get; set; }
+    [Export] public Gimbal? GimbalNode { get; set; }
 
     private BattleManager? _battleManager;
+    private UnitPresenter? _units;
+    private MovementController? _movement;
+    private AiTurnController? _aiController;
     private SelectionCursor? _cursor;
     private AstarPathfinding? _pathfinding;
-    private MeshInstance3D? _pathMesh;
-    private Node3D? _pathOwnerNode;
-    private string? _pathOwnerId;
-    private const string PlayerId = "Player";
-    private const string EnemyId = "Enemy";
-    private const float TileHeight = 0.2f;
-    private Node3D? _playerNode;
-    private Node3D? _enemyNode;
     private DirectionalLight3D? _light;
     private Gimbal? _gimbal;
-    private readonly MapLoader _mapLoader = new();
-    private readonly MapBuilder _mapBuilder = new();
-    private readonly UnitContentLoader _unitLoader = new();
-    private readonly Dictionary<string, Label3D> _healthBars = new();
-    private readonly Dictionary<string, int> _unitTeams = new();
-    private readonly Dictionary<string, Node3D> _unitNodes = new();
-    private readonly Dictionary<string, List<string>> _unitAbilities = new();
-    private readonly List<Label> _turnOrderLabels = new();
-    private bool _isMoving;
+    private BattleUi? _battleUi;
+    private QteController? _qteController;
+    private readonly List<MeshInstance3D> _rangeIndicators = new();
+    private InputState _inputState = InputState.Idle;
+
+    private readonly BattleComposition _composition = new();
+
     private bool _battleEnded;
     private bool _pendingTurnAdvance;
     private bool _aiPending;
+    private bool _abilityExecuting;
     private string _activeUnitId = PlayerId;
     private Vector3 _mapCenter = Vector3.Zero;
     private Vector2I _mapSize = new(8, 8);
-    private MapData? _loadedMap;
-    private Dictionary<Vector2I, int> _cellElevations = new();
+    private BattleComposition.MapContext? _mapContext;
+    private BattlePhase _phase = BattlePhase.Idle;
+
+    private const string PlayerId = "Player";
+    private const float TileSize = 2f;
+    private const float TileHeight = 0.2f;
     private const string DemoMapPath = "res://Infrastructure/Scenes/Maps/demo_map.json";
     private const string DemoUnitsPath = "res://Infrastructure/Scenes/Maps/demo_units.json";
-    private Control? _uiRoot;
-    private Button? _restartButton;
-    private Label? _gameOverLabel;
-    private TextureProgressBar? _qteBar;
-    private Control? _qteRoot;
-    private Label? _qteLabel;
-    private Label? _phaseLabel;
-    private PanelContainer? _abilityRoot;
-    private VBoxContainer? _abilityList;
-    private Control? _qteTrackContainer;
-    private ColorRect? _qteTrack;
-    private ColorRect? _qteGoodZone;
-    private ColorRect? _qteCritZone;
-    private ColorRect? _qteGreatZone;
-    private Label? _qteGoodLabel;
-    private Label? _qteGreatLabel;
-    private Label? _qteCritLabel;
-    private ColorRect? _qteIndicator;
-    private bool _qteActive;
-    private bool _abilityPanelOpen;
-    private float _qteTimer;
-    private float _qteDuration = 1.5f;
-    private float _qteTargetTime = 0.75f;
-    private float _qteCritWindow = 0.1f;
-    private float _qteGreatWindow;
-    private float _qteGoodWindow;
-    private string? _qteAttacker;
-    private string? _qteTarget;
-    private string? _pendingTargetId;
-    private string? _pendingAttackerId;
-    private BattlePhase _phase = BattlePhase.Idle;
-    private const float TileSize = 2f;
+    private const string DefaultAbilityId = "basic_attack";
+    private string _pendingAbilityId = DefaultAbilityId;
 
     public override void _Ready()
     {
         EnsureInputMap();
         _battleManager = new BattleManager();
         AddChild(_battleManager);
+        _units = new UnitPresenter(UnitsRoot ?? this, _battleManager);
 
         BuildMap();
         CreateCamera();
         CreateLight();
         CreatePathfinding();
+        InitializeUi();
         SpawnUnits();
-        CreateBattleUi();
         CreateCursor();
+        CreateMovementController();
+        _aiController = new AiTurnController(_units);
     }
 
-    private IReadOnlyList<UnitContentLoader.UnitDefinition> LoadUnitDefinitions()
+    private void InitializeUi()
     {
-        if (_unitLoader.TryLoad(DemoUnitsPath, out var units))
-            return units;
-
-        GD.Print($"Falling back to compiled demo unit data because {DemoUnitsPath} was not found or failed to load.");
-        return DemoContent.GetUnits()
-            .Select((u, index) => new UnitContentLoader.UnitDefinition(
-                u.Blueprint,
-                u.Color,
-                Team: index, // simple 0/1 assignment for fallback
-                SpawnCell: new Vector2I(Mathf.RoundToInt(u.Position.X / TileSize), Mathf.RoundToInt(u.Position.Z / TileSize))))
-            .ToList();
+        _battleUi = new BattleUi(this, RestartBattle, BattleUiRoot);
+        _qteController = new QteController(_battleUi.Qte);
+        _qteController.Completed += OnQteCompleted;
+        UpdateTurnOrderUi();
+        UpdatePhaseUi();
     }
 
     private void SpawnUnits()
     {
-        if (_battleManager is null) return;
+        if (_battleManager is null || _units is null || _mapContext is null) return;
 
-        var unitDefinitions = LoadUnitDefinitions();
-        var spawnCursorByTeam = new Dictionary<int, int>();
-
-        foreach (var unit in unitDefinitions)
-        {
-            var node = CreateUnitNode(unit.Blueprint.Id, Vector3.Zero, unit.Color);
-            node.Position = ResolveSpawnPosition(unit, spawnCursorByTeam);
-
-            var state = CreateUnitState(unit.Blueprint);
-            _battleManager.RegisterUnit(node, state);
-            AssignUnitNode(state.Id, node);
-            _unitTeams[state.Id] = unit.Team;
-            _unitAbilities[state.Id] = unit.Blueprint.Abilities.ToList();
-            AttachHealthBar(node, state);
-        }
+        _composition.SpawnUnits(_mapContext, _units, TileSize, TileHeight, DemoUnitsPath);
 
         AdvanceTurnAndFocus();
         UpdateTurnOrderUi();
@@ -145,24 +94,37 @@ public partial class BattleSceneRoot : Node3D
     public override void _Process(double delta)
     {
         if (_battleEnded) return;
-        ProcessQte(delta);
-        if (_phase == BattlePhase.Idle)
+        if (_battleManager is null || _units is null) return;
+
+        _qteController?.Update(delta);
+        if (_phase == BattlePhase.Idle && _inputState == InputState.Idle)
         {
             HandleUnitInput();
             ProcessAiTurn();
         }
+
+        if (_battleUi is not null && _battleUi.AbilityPanelVisible && Input.IsActionJustPressed("ui_cancel"))
+        {
+            HideAbilityPanel();
+        }
+
+        if (_cursor is not null && _gimbal?.Camera is not null)
+        {
+            _cursor.Camera = _gimbal.Camera;
+            _cursor.SyncToCameraLook();
+        }
+
         UpdateLight();
         UpdatePathPreview();
-        UpdateHealthBarFacing();
+        _units.UpdateHealthBarFacing(_gimbal?.Camera);
         TryAdvanceAfterMovement();
-        UpdatePhaseLabel();
+        UpdatePhaseUi();
     }
 
     private void HandleUnitInput()
     {
-        if (_battleEnded) return;
-        if (_battleManager is null) return;
-        if (_phase != BattlePhase.Idle) return;
+        if (_battleEnded || _battleManager is null || _phase != BattlePhase.Idle) return;
+        if (_units is not null && _units.TryGetTeam(_activeUnitId, out var team) && team > 1) return; // player only
 
         if (IsAttackJustPressed())
             HandleActionAtCursor();
@@ -177,11 +139,11 @@ public partial class BattleSceneRoot : Node3D
 
     private void HandleActionAtCursor()
     {
-        if (_battleManager is null || _cursor is null) return;
+        if (_battleManager is null || _cursor is null || _units is null) return;
         if (_battleEnded) return;
 
-        var activeNode = _pathOwnerNode;
-        var attackerId = _pathOwnerId ?? _activeUnitId;
+        var activeNode = _movement?.PreviewNode;
+        var attackerId = _movement?.PreviewUnitId ?? _activeUnitId;
         if (activeNode is null || string.IsNullOrEmpty(attackerId))
         {
             if (!TryGetActiveNode(out activeNode))
@@ -189,180 +151,264 @@ public partial class BattleSceneRoot : Node3D
             attackerId = activeNode.Name;
             _activeUnitId = attackerId;
         }
-        var targetId = attackerId == PlayerId ? EnemyId : PlayerId;
+
         var cursorPos = _cursor.GetSelectedTile();
-        var targetNode = GetNodeAtPosition(cursorPos, excludeId: attackerId);
+        var targetNode = _units.GetNodeAtPosition(_pathfinding!, cursorPos, excludeId: attackerId);
 
         if (targetNode != null)
         {
             HideAbilityPanel();
-            // Tile occupied: show abilities/skills
             ShowAbilityPanel(attackerId, targetNode.Name);
         }
         else
         {
             StartMoveAlongPath(attackerId, activeNode, cursorPos);
-            return; // movement handles turn advance when done
+            return;
         }
 
         UpdateTurnOrderUi();
     }
 
-    private void StartMoveAlongPath(string unitId, Node3D node, Vector3 destination)
+    private void ShowAbilityPanel(string attackerId, string targetId)
     {
-        if (_pathfinding is null) return;
-        var destCell = _pathfinding.WorldToCell(destination);
-        if (IsCellOccupied(destCell, unitId))
-        {
-            GD.Print("Destination occupied.");
-            return;
-        }
+        if (_battleUi is null || _units is null || _pathfinding is null || _battleManager is null) return;
+        var abilityIds = _units.GetAbilities(attackerId);
+        if (abilityIds.Count == 0) return;
 
-        var path = GetElevatedPath(node.GlobalPosition, destination);
-        if (path.Length < 2)
-        {
-            ClearPathVisualization();
-            GD.Print("No path found.");
-            return;
-        }
+        var attackerNode = _units.GetNode(attackerId);
+        if (attackerNode is null) return;
 
-        _isMoving = true;
-        _pathOwnerNode = null;
-        _pathOwnerId = null;
-        _pathMesh = _pathfinding.VisualizePath(path, this, _pathMesh);
-        _gimbal?.BeginFollow(node);
-        _phase = BattlePhase.Moving;
-        var tween = GetTree().CreateTween();
-        const float moveSpeed = 6f; // units per second
-        for (int i = 1; i < path.Length; i++)
-        {
-            var from = path[i - 1];
-            var to = path[i];
-            var segmentDist = from.DistanceTo(to);
-            var duration = segmentDist / moveSpeed;
-            tween.TweenProperty(node, "global_position", to, duration)
-                .SetTrans(Tween.TransitionType.Sine)
-                .SetEase(Tween.EaseType.InOut);
-        }
+        var abilities = abilityIds
+            .Select(id => new AbilityOption(id, GetAbilityLabel(id)))
+            .ToList();
 
-        tween.TweenCallback(Callable.From(() =>
-        {
-            _battleManager?.ConsumeTurn(unitId);
-            _gimbal?.StopFollow();
-            _isMoving = false;
-            _phase = BattlePhase.Idle;
-            ClearPathVisualization();
-            _pendingTurnAdvance = true;
-        }));
+        _battleUi.ShowAbilityPanel(abilities, abilityId => OnAbilitySelected(attackerId, targetId, abilityId), abilityId => ShowAbilityRange(attackerId, abilityId), HideAbilityPanel);
+        ShowAbilityRange(attackerId, abilities.First().Id);
+        if (_gimbal is not null) _gimbal.InputEnabled = false;
+        _inputState = InputState.Ability;
+        if (_cursor is not null) _cursor.InputEnabled = false;
     }
 
-    private void ExecuteAttack(string attackerId, string targetId, TimingBarInput input)
+    private void HideAbilityPanel()
+    {
+        _battleUi?.HideAbilityPanel();
+        ClearRangeIndicators();
+        if (_gimbal is not null) _gimbal.InputEnabled = true;
+        _inputState = InputState.Idle;
+        if (_cursor is not null) _cursor.InputEnabled = true;
+    }
+
+    private void OnAbilitySelected(string attackerId, string targetId, string abilityId)
+    {
+        if (_abilityExecuting) return;
+        _pendingAbilityId = string.IsNullOrEmpty(abilityId) ? DefaultAbilityId : abilityId;
+        var isPlayerControlled = _units is not null && _units.TryGetTeam(attackerId, out var team) && team <= 1;
+
+        if (!IsTargetInRange(attackerId, targetId, _pendingAbilityId))
+        {
+            GD.Print("Target out of range.");
+            return;
+        }
+        _abilityExecuting = true;
+        HideAbilityPanel();
+        if (isPlayerControlled)
+        {
+            if (_qteController is null) return;
+            _phase = BattlePhase.Qte;
+            _inputState = InputState.Qte;
+            UpdatePhaseUi();
+            _qteController.Begin(attackerId, targetId);
+        }
+        else
+        {
+            var targetTime = _qteController?.TargetTime ?? 0.75f;
+            ExecuteAttack(attackerId, targetId, new TimingBarInput(targetTime, targetTime), _pendingAbilityId);
+        }
+        if (_gimbal is not null) _gimbal.InputEnabled = true;
+        if (_cursor is not null) _cursor.InputEnabled = _inputState == InputState.Idle;
+    }
+
+    private bool StartMoveAlongPath(string unitId, Node3D node, Vector3 destination)
+    {
+        if (_battleManager is null || _movement is null || _units is null) return false;
+        if (_movement.TryStartMove(unitId, node, destination, _units, facing =>
+        {
+            _battleManager.ConsumeTurn(unitId);
+            _units.SetFacing(unitId, facing);
+            _phase = BattlePhase.Idle;
+            _inputState = InputState.Idle;
+            if (_cursor is not null) _cursor.InputEnabled = true;
+            UpdatePhaseUi();
+            _pendingTurnAdvance = true;
+        }))
+        {
+            _phase = BattlePhase.Moving;
+            _inputState = InputState.Moving;
+            if (_cursor is not null) _cursor.InputEnabled = false;
+            UpdatePhaseUi();
+            return true;
+        }
+        return false;
+    }
+
+    private void OnQteCompleted(string attackerId, string targetId, TimingBarInput input)
+    {
+        ExecuteAttack(attackerId, targetId, input, _pendingAbilityId);
+        _phase = BattlePhase.Idle;
+        _inputState = InputState.Idle;
+        if (_cursor is not null) _cursor.InputEnabled = true;
+        UpdatePhaseUi();
+    }
+
+    private void ExecuteAttack(string attackerId, string targetId, TimingBarInput input, string abilityId)
     {
         if (_battleManager is null) return;
-        var result = _battleManager.ExecuteAbility("basic_attack", attackerId, targetId, input, Facing.Front);
-        UpdateHealthBar(targetId);
+
+        var resolvedAbility = string.IsNullOrEmpty(abilityId) ? DefaultAbilityId : abilityId;
+        var facing = GetFacingForAttack(attackerId, targetId);
+        _battleManager.ExecuteAbility(resolvedAbility, attackerId, targetId, input, facing);
+        _units?.UpdateHealthBar(targetId);
         HandleDeaths(targetId);
         _pendingTurnAdvance = true;
         HideAbilityPanel();
-    }
-
-    private void BeginQte(string attackerId, string targetId)
-    {
-        HideAbilityPanel();
-        _qteActive = true;
-        _qteTimer = 0f;
-        _qteAttacker = attackerId;
-        _qteTarget = targetId;
-        _qteTargetTime = _qteDuration * 0.5f;
-        _qteCritWindow = 0.1f;
-        _qteGreatWindow = _qteCritWindow * 2.5f;
-        _qteGoodWindow = _qteCritWindow * 4f;
-        _phase = BattlePhase.Qte;
-        if (_qteRoot != null) _qteRoot.Visible = true;
-        if (_qteBar != null) _qteBar.Value = 0;
-        if (_qteLabel != null) _qteLabel.Text = "Timing! Press Space";
-        UpdateQteZoneLayout();
-    }
-
-    private void ProcessQte(double delta)
-    {
-        if (!_qteActive) return;
-        _qteTimer += (float)delta;
-        var progress = Mathf.Clamp(_qteTimer / _qteDuration, 0f, 1f);
-        UpdateQteVisuals(progress);
-        if (_qteBar != null)
-        {
-            _qteBar.MaxValue = 1;
-            _qteBar.Value = progress;
-        }
-
-        if (Input.IsActionJustPressed("attack"))
-        {
-            CompleteQte(_qteTimer);
-            return;
-        }
-
-        if (_qteTimer >= _qteDuration)
-        {
-            CompleteQte(_qteDuration + 0.5f);
-        }
-    }
-
-    private void CompleteQte(float pressTime)
-    {
-        _qteActive = false;
-        _qteRoot?.Hide();
-        if (_qteAttacker is null || _qteTarget is null) return;
-
-        var delta = Math.Abs(pressTime - _qteTargetTime);
-        var input = new TimingBarInput(_qteTargetTime, pressTime);
-        ExecuteAttack(_qteAttacker, _qteTarget, input);
-        _qteAttacker = null;
-        _qteTarget = null;
-        _phase = BattlePhase.Idle;
-        UpdateQteVisuals(0);
-        HideAbilityPanel();
+        _pendingAbilityId = DefaultAbilityId;
+        _abilityExecuting = false;
     }
 
     private void ProcessAiTurn()
     {
-        if (_battleManager is null) return;
+        if (_battleManager is null || _units is null || _aiController is null) return;
         if (_activeUnitId == string.Empty) return;
-        if (!_unitTeams.TryGetValue(_activeUnitId, out var team)) return;
+        if (!_units.TryGetTeam(_activeUnitId, out var team)) return;
         const int AiTeam = 2;
         if (team != AiTeam) return;
         if (_aiPending) return;
 
         _aiPending = true;
-        var target = SelectAiTarget(team);
-        if (target == null)
+        _inputState = InputState.AiTurn;
+        if (_cursor is not null) _cursor.InputEnabled = false;
+        try
         {
-            _pendingTurnAdvance = true;
-            return;
-        }
+            var target = _aiController.SelectTarget(_activeUnitId, team);
+            if (target == null)
+            {
+                _pendingTurnAdvance = true;
+                return;
+            }
 
-        ExecuteAttack(_activeUnitId, target, new TimingBarInput(_qteTargetTime, _qteTargetTime));
-        _aiPending = false;
+            var targetTime = _qteController?.TargetTime ?? 0.75f;
+            var abilityId = ChooseAiAbility(_activeUnitId);
+
+            var activeNode = _units.GetNode(_activeUnitId);
+            var targetNode = _units.GetNode(target);
+            if (activeNode is null || targetNode is null)
+            {
+                _pendingTurnAdvance = true;
+                return;
+            }
+
+            if (IsTargetInRange(activeNode, targetNode, abilityId))
+            {
+                ExecuteAttack(_activeUnitId, target, new TimingBarInput(targetTime, targetTime), abilityId);
+                return;
+            }
+
+            // Move closer toward target to get in range.
+            if (TryMoveAiIntoRange(activeNode, targetNode, abilityId))
+            {
+                return;
+            }
+
+            // If we can't move, advance turn.
+            _pendingTurnAdvance = true;
+        }
+        finally
+        {
+            _aiPending = false;
+            _inputState = InputState.Idle;
+            if (_cursor is not null) _cursor.InputEnabled = true;
+        }
     }
 
-    private string? SelectAiTarget(int aiTeam)
+    private string ChooseAiAbility(string unitId)
     {
-        var enemies = _unitTeams.Where(kvp => kvp.Value != aiTeam)
-            .Select(kvp => kvp.Key)
-            .Where(id => GetNodeById(id) != null)
-            .ToList();
-        if (enemies.Count == 0) return null;
+        if (_units is null) return DefaultAbilityId;
+        var abilities = _units.GetAbilities(unitId);
+        return abilities.Count > 0 ? abilities[0] : DefaultAbilityId;
+    }
 
-        var selfNode = GetNodeById(_activeUnitId);
-        if (selfNode is null) return enemies.First();
+    private bool TryMoveAiIntoRange(Node3D activeNode, Node3D targetNode, string abilityId)
+    {
+        if (_pathfinding is null || _movement is null || _units is null || _mapContext is null) return false;
+        if (!_battleManager!.TryGetAbility(abilityId, out var ability)) return false;
 
-        return enemies
-            .OrderBy(id => selfNode.GlobalPosition.DistanceTo(GetNodeById(id)!.GlobalPosition))
-            .First();
+        var targetCell = _pathfinding.WorldToCell(targetNode.GlobalPosition);
+        var activeCell = _pathfinding.WorldToCell(activeNode.GlobalPosition);
+
+        // For now, only support simple diamond range; expand as abilities grow.
+        var candidateCells = new List<Vector3I>();
+        var maxRange = Mathf.Max(ability.Range.Min, ability.Range.Max);
+        for (int dx = -maxRange; dx <= maxRange; dx++)
+        {
+            for (int dz = -maxRange; dz <= maxRange; dz++)
+            {
+                var manhattan = Mathf.Abs(dx) + Mathf.Abs(dz);
+                if (manhattan < ability.Range.Min || manhattan > ability.Range.Max) continue;
+                var cell = new Vector3I(targetCell.X + dx, 0, targetCell.Z + dz);
+                if (cell == activeCell) continue;
+                candidateCells.Add(cell);
+            }
+        }
+
+        var best = FindReachableClosestCell(activeNode.GlobalPosition, candidateCells);
+        if (best is null) return false;
+
+        var destWorld = ConvertSpawnToWorld(new Vector2I(best.Value.X, best.Value.Z));
+        return StartMoveAlongPath(_activeUnitId, activeNode, destWorld);
+    }
+
+    private Vector3I? FindReachableClosestCell(Vector3 startWorld, IEnumerable<Vector3I> cells)
+    {
+        if (_pathfinding is null || _units is null) return null;
+        Vector3I? bestCell = null;
+        float bestScore = float.MaxValue;
+        var moveRange = GetMoveRange(_activeUnitId);
+
+        foreach (var cell in cells)
+        {
+            if (_units.IsCellOccupied(_pathfinding, cell, _activeUnitId)) continue;
+            var world = _pathfinding.CellToWorld(cell);
+            var path = _pathfinding.GetPath(startWorld, world);
+            if (path.Length == 0) continue;
+            if (path.Length - 1 > moveRange) continue;
+            var score = path.Length;
+            if (score < bestScore)
+            {
+                bestScore = score;
+                bestCell = cell;
+            }
+        }
+
+        return bestCell;
     }
 
     private void CreateCamera()
     {
+        if (GimbalNode != null)
+        {
+            _gimbal = GimbalNode;
+            _gimbal.Position = _mapCenter;
+            return;
+        }
+
+        var existing = GetNodeOrNull<Gimbal>("Gimbal");
+        if (existing != null)
+        {
+            _gimbal = existing;
+            _gimbal.Position = _mapCenter;
+            return;
+        }
+
         _gimbal = new Gimbal
         {
             Position = _mapCenter
@@ -396,6 +442,19 @@ public partial class BattleSceneRoot : Node3D
         _cursor.RegisterIndicatorMesh(meshInstance, normalColor, occupiedColor);
     }
 
+    private void CreateMovementController()
+    {
+        if (_pathfinding is null || _cursor is null) return;
+
+        _movement = new MovementController(
+            _pathfinding,
+            _cursor,
+            this,
+            cell => ConvertSpawnToWorld(cell),
+            _gimbal,
+            GetMoveRange);
+    }
+
     private void CreatePathfinding()
     {
         _pathfinding = new AstarPathfinding();
@@ -405,18 +464,9 @@ public partial class BattleSceneRoot : Node3D
 
     private void BuildMap()
     {
-        if (_mapLoader.TryLoad(DemoMapPath, out var mapData))
-        {
-            _loadedMap = mapData;
-            _cellElevations = mapData.Cells.ToDictionary(c => new Vector2I(c.X, c.Y), c => c.Elevation);
-            _mapSize = new Vector2I(mapData.Width, mapData.Height);
-            _mapCenter = _mapBuilder.BuildFromMapData(this, mapData, TileSize, TileHeight).Center;
-            return;
-        }
-
-        _cellElevations = new Dictionary<Vector2I, int>();
-        GD.Print($"Falling back to flat grid because map could not be loaded from {DemoMapPath}.");
-        _mapCenter = _mapBuilder.BuildFlatGrid(this, _mapSize, TileSize, TileHeight).Center;
+        _mapContext = _composition.BuildMap(MapRoot ?? this, DemoMapPath, _mapSize, TileSize, TileHeight);
+        _mapCenter = _mapContext.Center;
+        _mapSize = _mapContext.Size;
     }
 
     private void EnsureInputMap()
@@ -426,6 +476,43 @@ public partial class BattleSceneRoot : Node3D
         AddActionIfMissing("cam_left", new InputEventKey { Keycode = Key.A });
         AddActionIfMissing("cam_right", new InputEventKey { Keycode = Key.D });
         AddActionIfMissing("attack", new InputEventKey { Keycode = Key.Space });
+        AddActionIfMissing("ui_accept", new InputEventKey { Keycode = Key.Enter });
+        AddActionIfMissing("ui_cancel", new InputEventKey { Keycode = Key.Escape });
+        AddActionIfMissing("cam_rotate_left", new InputEventKey { Keycode = Key.Q });
+        AddActionIfMissing("cam_rotate_right", new InputEventKey { Keycode = Key.E });
+        AddActionIfMissing("cam_rotate_up", new InputEventKey { Keycode = Key.Up });
+        AddActionIfMissing("cam_rotate_down", new InputEventKey { Keycode = Key.Down });
+        AddActionIfMissing("cam_zoom_in", new InputEventKey { Keycode = Key.Plus });
+        AddActionIfMissing("cam_zoom_out", new InputEventKey { Keycode = Key.Minus });
+        // Duplicate WASD to UI nav to allow ability selection with WASD.
+        AddEventIfMissing("ui_up", new InputEventKey { Keycode = Key.W });
+        AddEventIfMissing("ui_down", new InputEventKey { Keycode = Key.S });
+        AddEventIfMissing("ui_left", new InputEventKey { Keycode = Key.A });
+        AddEventIfMissing("ui_right", new InputEventKey { Keycode = Key.D });
+        AddEventIfMissing("ui_accept", new InputEventKey { Keycode = Key.Space });
+
+        // Controller mappings
+        AddEventIfMissing("attack", new InputEventJoypadButton { ButtonIndex = JoyButton.A });
+        AddEventIfMissing("cam_forward", new InputEventJoypadButton { ButtonIndex = JoyButton.DpadUp });
+        AddEventIfMissing("cam_back", new InputEventJoypadButton { ButtonIndex = JoyButton.DpadDown });
+        AddEventIfMissing("cam_left", new InputEventJoypadButton { ButtonIndex = JoyButton.DpadLeft });
+        AddEventIfMissing("cam_right", new InputEventJoypadButton { ButtonIndex = JoyButton.DpadRight });
+        AddEventIfMissing("ui_accept", new InputEventJoypadButton { ButtonIndex = JoyButton.A });
+        AddEventIfMissing("ui_cancel", new InputEventJoypadButton { ButtonIndex = JoyButton.B });
+        AddEventIfMissing("ui_up", new InputEventJoypadMotion { Axis = JoyAxis.LeftY, AxisValue = -1f });
+        AddEventIfMissing("ui_down", new InputEventJoypadMotion { Axis = JoyAxis.LeftY, AxisValue = 1f });
+        AddEventIfMissing("ui_left", new InputEventJoypadMotion { Axis = JoyAxis.LeftX, AxisValue = -1f });
+        AddEventIfMissing("ui_right", new InputEventJoypadMotion { Axis = JoyAxis.LeftX, AxisValue = 1f });
+        AddEventIfMissing("cam_forward", new InputEventJoypadMotion { Axis = JoyAxis.LeftY, AxisValue = -1f });
+        AddEventIfMissing("cam_back", new InputEventJoypadMotion { Axis = JoyAxis.LeftY, AxisValue = 1f });
+        AddEventIfMissing("cam_left", new InputEventJoypadMotion { Axis = JoyAxis.LeftX, AxisValue = -1f });
+        AddEventIfMissing("cam_right", new InputEventJoypadMotion { Axis = JoyAxis.LeftX, AxisValue = 1f });
+        AddEventIfMissing("cam_rotate_left", new InputEventJoypadMotion { Axis = JoyAxis.RightX, AxisValue = -1f });
+        AddEventIfMissing("cam_rotate_right", new InputEventJoypadMotion { Axis = JoyAxis.RightX, AxisValue = 1f });
+        AddEventIfMissing("cam_rotate_up", new InputEventJoypadMotion { Axis = JoyAxis.RightY, AxisValue = -1f });
+        AddEventIfMissing("cam_rotate_down", new InputEventJoypadMotion { Axis = JoyAxis.RightY, AxisValue = 1f });
+        AddEventIfMissing("cam_zoom_in", new InputEventJoypadMotion { Axis = JoyAxis.TriggerRight, AxisValue = 1f });
+        AddEventIfMissing("cam_zoom_out", new InputEventJoypadMotion { Axis = JoyAxis.TriggerLeft, AxisValue = 1f });
     }
 
     private static void AddActionIfMissing(string name, InputEvent @event)
@@ -433,6 +520,20 @@ public partial class BattleSceneRoot : Node3D
         if (InputMap.HasAction(name)) return;
         InputMap.AddAction(name);
         InputMap.ActionAddEvent(name, @event);
+    }
+
+    private static void AddEventIfMissing(string actionName, InputEvent @event)
+    {
+        if (!InputMap.HasAction(actionName))
+            InputMap.AddAction(actionName);
+
+        foreach (var existing in InputMap.ActionGetEvents(actionName))
+        {
+            if (existing.AsText() == @event.AsText())
+                return;
+        }
+
+        InputMap.ActionAddEvent(actionName, @event);
     }
 
     private void CreateLight()
@@ -456,67 +557,9 @@ public partial class BattleSceneRoot : Node3D
 
     private void UpdatePathPreview()
     {
-        if (_cursor is null) return;
-        RefreshPathVisualization();
-    }
-
-    private void RefreshPathVisualization()
-    {
-        if (_pathfinding is null || _cursor is null) return;
+        if (_cursor is null || _movement is null || _pathfinding is null || _units is null) return;
         if (!TryGetActiveNode(out var activeNode)) return;
-        if (_isMoving) return;
-
-        var targetCell = _pathfinding.WorldToCell(_cursor.GetSelectedTile());
-        var occupied = IsCellOccupied(targetCell, _activeUnitId);
-        _cursor.SetOccupied(occupied);
-        if (occupied)
-        {
-            ClearPathVisualization();
-            return;
-        }
-
-        var path = GetElevatedPath(activeNode.GlobalPosition, _cursor.GetSelectedTile());
-        if (path.Length < 2)
-        {
-            ClearPathVisualization();
-            return;
-        }
-
-        _pathOwnerNode = activeNode;
-        _pathOwnerId = _activeUnitId;
-        _pathMesh = _pathfinding.VisualizePath(path, this, _pathMesh);
-    }
-
-    private void ClearPathVisualization()
-    {
-        if (_pathMesh != null && _pathMesh.IsInsideTree())
-            _pathMesh.QueueFree();
-
-        _pathMesh = null;
-        _pathOwnerNode = null;
-        _pathOwnerId = null;
-    }
-
-    private Vector3[] GetElevatedPath(Vector3 start, Vector3 end)
-    {
-        if (_pathfinding is null) return System.Array.Empty<Vector3>();
-        var destCell = _pathfinding.WorldToCell(end);
-        if (IsCellOccupied(destCell, _activeUnitId))
-            return System.Array.Empty<Vector3>();
-
-        var rawPath = _pathfinding.GetPath(start, end);
-        if (rawPath.Length == 0) return rawPath;
-
-        var adjusted = new Vector3[rawPath.Length];
-        for (int i = 0; i < rawPath.Length; i++)
-        {
-            var cell = _pathfinding.WorldToCell(rawPath[i]);
-            adjusted[i] = ConvertSpawnToWorld(new Vector2I(cell.X, cell.Z));
-        }
-
-        // Ensure the starting point matches the current node height exactly.
-        adjusted[0] = start;
-        return adjusted;
+        _movement.RefreshPathPreview(_activeUnitId, activeNode, _units, _phase);
     }
 
     private void FocusCameraOnActiveUnit()
@@ -528,47 +571,115 @@ public partial class BattleSceneRoot : Node3D
         _gimbal.SmoothFocus(targetNode.GlobalPosition);
     }
 
-    private Node3D? GetNodeById(string unitId) =>
-        _unitNodes.TryGetValue(unitId, out var node) ? node : null;
+    private Node3D? GetNodeById(string unitId) => _units?.GetNode(unitId);
 
-    private Node3D? GetNodeAtPosition(Vector3 position, string? excludeId = null)
+    private static bool IsAttackJustPressed() => Input.IsActionJustPressed("attack");
+
+    private Facing GetFacingForAttack(string attackerId, string targetId)
     {
-        if (_pathfinding is null) return null;
-        var cell = _pathfinding.WorldToCell(position);
-        foreach (var kvp in _unitNodes)
+        if (_units is null) return Facing.Front;
+        var attackerNode = _units.GetNode(attackerId);
+        var targetNode = _units.GetNode(targetId);
+        if (attackerNode is null || targetNode is null) return Facing.Front;
+
+        // Face attacker toward target for readability.
+        attackerNode.LookAt(targetNode.GlobalPosition, Vector3.Up);
+
+        var defenderForward = _units.GetFacing(targetId);
+        var dirToAttacker = (attackerNode.GlobalPosition - targetNode.GlobalPosition).Normalized();
+        _units.SetFacing(attackerId, dirToAttacker);
+        var dot = defenderForward.Dot(dirToAttacker);
+        if (dot < -0.5f) return Facing.Back;
+        if (dot > 0.5f) return Facing.Front;
+        return Facing.Side;
+    }
+
+    private bool IsTargetInRange(Node3D attacker, Node3D target, string abilityId)
+    {
+        if (_pathfinding is null || _battleManager is null) return false;
+        if (!_battleManager.TryGetAbility(abilityId, out var ability)) return false;
+
+        var attackerCell = _pathfinding.WorldToCell(attacker.GlobalPosition);
+        var targetCell = _pathfinding.WorldToCell(target.GlobalPosition);
+        var distance = Mathf.Abs(attackerCell.X - targetCell.X) + Mathf.Abs(attackerCell.Z - targetCell.Z);
+        return distance >= ability.Range.Min && distance <= ability.Range.Max;
+    }
+
+    private bool IsTargetInRange(string attackerId, string targetId, string abilityId)
+    {
+        if (_units is null) return false;
+        var attackerNode = _units.GetNode(attackerId);
+        var targetNode = _units.GetNode(targetId);
+        if (attackerNode is null || targetNode is null) return false;
+        return IsTargetInRange(attackerNode, targetNode, abilityId);
+    }
+
+    private void ShowAbilityRange(string attackerId, string abilityId)
+    {
+        ClearRangeIndicators();
+        if (_units is null || _pathfinding is null || _mapContext is null) return;
+        if (_battleManager is null || !_battleManager.TryGetAbility(abilityId, out var ability)) return;
+        var attackerNode = _units.GetNode(attackerId);
+        if (attackerNode is null) return;
+
+        var attackerCell = _pathfinding.WorldToCell(attackerNode.GlobalPosition);
+        var cells = GetCellsInRange(attackerCell, ability.Range);
+        foreach (var cell in cells)
         {
-            if (excludeId != null && kvp.Key == excludeId) continue;
-            if (kvp.Value is null) continue;
-            var nodeCell = _pathfinding.WorldToCell(kvp.Value.GlobalPosition);
-            if (nodeCell.X == cell.X && nodeCell.Z == cell.Z)
-                return kvp.Value;
+            var world = ConvertSpawnToWorld(new Vector2I(cell.X, cell.Z));
+            var mesh = new BoxMesh { Size = new Vector3(TileSize * 0.9f, 0.05f, TileSize * 0.9f) };
+            var indicator = new MeshInstance3D
+            {
+                Mesh = mesh,
+                MaterialOverride = new StandardMaterial3D { AlbedoColor = new Color(0.2f, 0.7f, 1f, 0.35f) },
+            };
+            var parent = MapRoot ?? this;
+            parent.AddChild(indicator);
+            indicator.GlobalPosition = world + new Vector3(0, 0.03f, 0);
+            _rangeIndicators.Add(indicator);
         }
-
-        return null;
     }
 
-    private bool IsCellOccupied(Vector3I cell, string? ignoreId = null)
+    private IEnumerable<Vector3I> GetCellsInRange(Vector3I center, RangePattern range)
     {
-        foreach (var kvp in _unitNodes)
+        var max = range.Max;
+        var min = range.Min;
+        var bounds = _mapContext?.Size ?? _mapSize;
+        for (int dx = -max; dx <= max; dx++)
         {
-            if (ignoreId != null && kvp.Key == ignoreId) continue;
-            var node = kvp.Value;
-            if (node is null || _pathfinding is null) continue;
-            var nodeCell = _pathfinding.WorldToCell(node.GlobalPosition);
-            if (nodeCell == cell)
-                return true;
+            for (int dz = -max; dz <= max; dz++)
+            {
+                var manhattan = Mathf.Abs(dx) + Mathf.Abs(dz);
+                if (manhattan < min || manhattan > max) continue;
+                var cell = new Vector3I(center.X + dx, 0, center.Z + dz);
+                if (cell.X < 0 || cell.Z < 0 || cell.X >= bounds.X || cell.Z >= bounds.Y) continue;
+                yield return cell;
+            }
         }
-
-        return false;
     }
 
-    private void AssignUnitNode(string id, Node3D node)
+    private void ClearRangeIndicators()
     {
-        _unitNodes[id] = node;
+        foreach (var node in _rangeIndicators)
+        {
+            if (IsInstanceValid(node))
+                node.QueueFree();
+        }
+        _rangeIndicators.Clear();
     }
 
-    private static UnitState CreateUnitState(UnitBlueprint blueprint) =>
-        new(blueprint.Id, blueprint.BaseStats, blueprint.Affinity, blueprint.MoveRange);
+    private Vector3 ConvertSpawnToWorld(Vector2I cell)
+    {
+        if (_mapContext is null) return Vector3.Zero;
+        return _composition.ConvertSpawnToWorld(_mapContext, cell, TileSize, TileHeight);
+    }
+
+    private int GetMoveRange(string unitId)
+    {
+        if (_battleManager is not null && _battleManager.TryGetUnit(unitId, out var state) && state is not null)
+            return state.MoveRange;
+        return 0;
+    }
 
     private void AdvanceTurnAndFocus()
     {
@@ -585,183 +696,26 @@ public partial class BattleSceneRoot : Node3D
         UpdateTurnOrderUi();
     }
 
-    private static bool IsAttackJustPressed() => Input.IsActionJustPressed("attack");
-
-    private Vector3 ResolveSpawnPosition(UnitContentLoader.UnitDefinition unit, Dictionary<int, int> spawnCursorByTeam)
-    {
-        if (_loadedMap == null) return GetFallbackSpawn(unit.SpawnCell);
-
-        if (!spawnCursorByTeam.TryGetValue(unit.Team, out var index))
-            index = 0;
-
-        var spawn = _loadedMap.Spawns.Where(s => s.Team == unit.Team).Skip(index).FirstOrDefault();
-        if (spawn != null)
-        {
-            spawnCursorByTeam[unit.Team] = index + 1;
-            return ConvertSpawnToWorld(new Vector2I(spawn.X, spawn.Y));
-        }
-
-        GD.Print($"No spawn point found for team {unit.Team}; falling back to unit-specified spawn.");
-        return GetFallbackSpawn(unit.SpawnCell);
-    }
-
-    private Vector3 ConvertSpawnToWorld(Vector2I cell)
-    {
-        var elevation = GetElevationAt(cell);
-        return _mapBuilder.CellToWorld(cell, TileSize, TileHeight, elevation);
-    }
-
-    private Vector3 GetFallbackSpawn(Vector2I cell)
-    {
-        var elevation = GetElevationAt(cell);
-        return _mapBuilder.CellToWorld(cell, TileSize, TileHeight, elevation);
-    }
-
-    private int GetElevationAt(Vector2I cell) => _cellElevations.TryGetValue(cell, out var e) ? e : 0;
-
-    private Node3D CreateUnitNode(string id, Vector3 position, Color color)
-    {
-        var node = new Node3D { Name = id, Position = position };
-        node.AddChild(BuildCapsuleMesh(color));
-        AddChild(node);
-        return node;
-    }
-
-    private void AttachHealthBar(Node3D node, UnitState state)
-    {
-        var label = new Label3D
-        {
-            Name = $"{state.Id}_Health",
-            Text = $"{state.CurrentHP}/{state.Stats.MaxHP}",
-            Position = new Vector3(0, 2.2f, 0),
-            PixelSize = 0.01f
-        };
-        _healthBars[state.Id] = label;
-        node.AddChild(label);
-    }
-
-    private void UpdateHealthBar(string unitId)
-    {
-        if (_battleManager is null) return;
-        if (!_healthBars.TryGetValue(unitId, out var label)) return;
-        if (!_battleManager.TryGetUnit(unitId, out var state) || state is null) return;
-
-        label.Text = $"{state.CurrentHP}/{state.Stats.MaxHP}";
-    }
-
-    private void UpdateHealthBarFacing()
-    {
-        if (_gimbal?.Camera is null) return;
-        var camPos = _gimbal.Camera.GlobalTransform.Origin;
-        foreach (var label in _healthBars.Values)
-        {
-            if (!IsInstanceValid(label)) continue;
-            label.LookAt(camPos, Vector3.Up);
-            label.RotateObjectLocal(Vector3.Up, Mathf.Pi); // orient text toward camera
-        }
-    }
-
     private void HandleDeaths(string unitId)
     {
-        if (_battleManager is null) return;
+        if (_battleManager is null || _units is null) return;
         if (!_battleManager.TryGetUnit(unitId, out var state) || state is null) return;
         if (state.IsAlive) return;
 
-        RemoveUnit(unitId);
-        CheckBattleEnd();
-    }
+        _units.RemoveUnit(unitId);
 
-    private void RemoveUnit(string unitId)
-    {
-        var node = GetNodeById(unitId);
-        node?.QueueFree();
-        if (_battleManager is not null)
-            _battleManager.RemoveUnit(unitId);
-
-        if (_healthBars.TryGetValue(unitId, out var label) && IsInstanceValid(label))
-        {
-            label.QueueFree();
-            _healthBars.Remove(unitId);
-        }
-
-        _unitTeams.Remove(unitId);
-        _unitNodes.Remove(unitId);
-
-        // If the active unit was removed, advance to next available.
         if (_activeUnitId == unitId)
             AdvanceTurnAndFocus();
 
+        CheckBattleEnd();
         UpdateTurnOrderUi();
-    }
-
-    private void CreateBattleUi()
-    {
-        _uiRoot = new Control
-        {
-            Name = "BattleUI",
-            AnchorLeft = 0,
-            AnchorRight = 1,
-            AnchorTop = 0,
-            AnchorBottom = 1
-        };
-        AddChild(_uiRoot);
-
-        _gameOverLabel = new Label
-        {
-            Name = "GameOverLabel",
-            Text = "Game Over",
-            Visible = false,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        _gameOverLabel.AddThemeColorOverride("font_color", new Color(1, 0.85f, 0.2f));
-        _gameOverLabel.AddThemeFontSizeOverride("font_size", 36);
-        _gameOverLabel.AnchorLeft = 0.5f;
-        _gameOverLabel.AnchorRight = 0.5f;
-        _gameOverLabel.AnchorTop = 0.5f;
-        _gameOverLabel.AnchorBottom = 0.5f;
-        _gameOverLabel.OffsetLeft = -150;
-        _gameOverLabel.OffsetRight = 150;
-        _gameOverLabel.OffsetTop = -40;
-        _gameOverLabel.OffsetBottom = 0;
-        _uiRoot.AddChild(_gameOverLabel);
-
-        _restartButton = new Button
-        {
-            Name = "RestartButton",
-            Text = "Restart",
-            Visible = false,
-            AnchorLeft = 0.5f,
-            AnchorRight = 0.5f,
-            AnchorTop = 0.5f,
-            AnchorBottom = 0.5f,
-            OffsetLeft = -60,
-            OffsetRight = 60,
-            OffsetTop = 20,
-            OffsetBottom = 60
-        };
-        _restartButton.Pressed += RestartBattle;
-        _uiRoot.AddChild(_restartButton);
-
-        CreateTurnOrderPanel();
-        CreateQtePanel();
-        CreatePhaseLabel();
-        CreateAbilityPanel();
     }
 
     private void ShowGameOver()
     {
-        _qteActive = false;
+        _qteController?.Cancel();
         _phase = BattlePhase.Ended;
-        _qteRoot?.Hide();
-        if (_gameOverLabel != null) _gameOverLabel.Visible = true;
-        if (_restartButton != null) _restartButton.Visible = true;
-    }
-
-    private void UpdatePhaseLabel()
-    {
-        if (_phaseLabel is null) return;
-        _phaseLabel.Text = $"Phase: {_phase}";
+        _battleUi?.ShowGameOver();
     }
 
     private void RestartBattle()
@@ -769,314 +723,20 @@ public partial class BattleSceneRoot : Node3D
         GetTree().ReloadCurrentScene();
     }
 
-    private void CreateTurnOrderPanel()
-    {
-        const int slotCount = 6;
-        var panel = new PanelContainer
-        {
-            Name = "TurnOrderPanel",
-            AnchorRight = 1,
-            AnchorLeft = 1,
-            AnchorTop = 0,
-            AnchorBottom = 0,
-            OffsetLeft = -220,
-            OffsetRight = -20,
-            OffsetTop = 20,
-            OffsetBottom = 220
-        };
-
-        var vbox = new VBoxContainer
-        {
-            Name = "TurnOrderList",
-            AnchorLeft = 0,
-            AnchorRight = 1,
-            AnchorTop = 0,
-            AnchorBottom = 1,
-            OffsetLeft = 10,
-            OffsetRight = -10,
-            OffsetTop = 10,
-            OffsetBottom = -10
-        };
-
-        panel.AddChild(vbox);
-        _uiRoot?.AddChild(panel);
-
-        for (int i = 0; i < slotCount; i++)
-        {
-            var label = new Label
-            {
-                Text = "--",
-                HorizontalAlignment = HorizontalAlignment.Left
-            };
-            _turnOrderLabels.Add(label);
-            vbox.AddChild(label);
-        }
-
-        UpdateTurnOrderUi();
-    }
-
-    private void CreateAbilityPanel()
-    {
-        _abilityRoot = new PanelContainer
-        {
-            Name = "AbilityPanel",
-            Visible = false,
-            AnchorLeft = 0.35f,
-            AnchorRight = 0.65f,
-            AnchorTop = 0.2f,
-            AnchorBottom = 0.45f
-        };
-
-        _abilityList = new VBoxContainer
-        {
-            AnchorLeft = 0,
-            AnchorRight = 1,
-            AnchorTop = 0,
-            AnchorBottom = 1,
-            OffsetLeft = 10,
-            OffsetRight = -10,
-            OffsetTop = 10,
-            OffsetBottom = -10
-        };
-
-        _abilityRoot.AddChild(_abilityList);
-        _uiRoot?.AddChild(_abilityRoot);
-    }
-
     private void UpdateTurnOrderUi()
     {
-        if (_battleManager is null || _turnOrderLabels.Count == 0) return;
+        if (_battleManager is null || _battleUi is null) return;
 
-        var predicted = _battleManager.GetPredictedTurnOrder(_turnOrderLabels.Count).ToList();
-        for (int i = 0; i < _turnOrderLabels.Count; i++)
-        {
-            var labelIndex = _turnOrderLabels.Count - 1 - i; // active at bottom
-            var label = _turnOrderLabels[labelIndex];
-            if (i < predicted.Count)
-            {
-                var entry = predicted[i];
-                var status = entry.UnitId == _activeUnitId ? " (active)" : entry.IsReady ? " (ready)" : "";
-                label.Text = $"{entry.UnitId}{status}";
-            }
-            else
-            {
-                label.Text = "--";
-            }
-        }
+        var predicted = _battleManager.GetPredictedTurnOrder(_battleUi.TurnOrderSlotCount).ToList();
+        _battleUi.UpdateTurnOrder(predicted, _activeUnitId, GetDisplayName, GetColorForUnit);
     }
 
-    private void CreateQtePanel()
-    {
-        _qteRoot = new PanelContainer
-        {
-            Name = "QTEPanel",
-            Visible = false,
-            AnchorLeft = 0.3f,
-            AnchorRight = 0.7f,
-            AnchorTop = 0.7f,
-            AnchorBottom = 0.85f
-        };
-
-        var vbox = new VBoxContainer
-        {
-            AnchorLeft = 0,
-            AnchorRight = 1,
-            AnchorTop = 0,
-            AnchorBottom = 1,
-            OffsetLeft = 12,
-            OffsetRight = -12,
-            OffsetTop = 12,
-            OffsetBottom = -12
-        };
-
-        _qteLabel = new Label
-        {
-            Text = "Timing!",
-            HorizontalAlignment = HorizontalAlignment.Center
-        };
-        vbox.AddChild(_qteLabel);
-
-        _qteTrackContainer = new Control
-        {
-            AnchorLeft = 0,
-            AnchorTop = 0,
-            AnchorRight = 0,
-            AnchorBottom = 0,
-            SizeFlagsHorizontal = Control.SizeFlags.Fill,
-            CustomMinimumSize = new Vector2(320, 24)
-        };
-
-        // Zones parented to a single container to avoid anchor/size warnings.
-        _qteTrack = new ColorRect { Color = new Color(0.75f, 0.65f, 0.35f) };
-        _qteGoodZone = new ColorRect { Color = new Color(0.95f, 0.8f, 0.25f, 0.9f) };
-        _qteGreatZone = new ColorRect { Color = new Color(0.95f, 0.45f, 0.35f, 0.9f) };
-        _qteCritZone = new ColorRect { Color = new Color(0.2f, 0.45f, 1f, 0.95f) };
-        _qteIndicator = new ColorRect { Color = new Color(0.08f, 0.08f, 0.08f), CustomMinimumSize = new Vector2(10, 28) };
-
-        _qteTrackContainer.AddChild(_qteTrack);
-        _qteTrackContainer.AddChild(_qteGoodZone);
-        _qteTrackContainer.AddChild(_qteGreatZone);
-        _qteTrackContainer.AddChild(_qteCritZone);
-        _qteTrackContainer.AddChild(_qteIndicator);
-
-        _qteGoodLabel = CreateZoneLabel(string.Empty);
-        _qteGreatLabel = CreateZoneLabel(string.Empty);
-        _qteCritLabel = CreateZoneLabel(string.Empty);
-        _qteTrackContainer.AddChild(_qteGoodLabel);
-        _qteTrackContainer.AddChild(_qteGreatLabel);
-        _qteTrackContainer.AddChild(_qteCritLabel);
-
-        _qteTrackContainer.Resized += UpdateQteZoneLayout;
-        UpdateQteZoneLayout();
-
-        vbox.AddChild(_qteTrackContainer);
-
-        _qteRoot.AddChild(vbox);
-        _uiRoot?.AddChild(_qteRoot);
-    }
-
-    private void ClearChildren(Node container)
-    {
-        foreach (var child in container.GetChildren())
-        {
-            if (child is Node node)
-                node.QueueFree();
-        }
-    }
-
-    private void UpdateQteZoneLayout()
-    {
-        if (_qteTrackContainer is null || _qteIndicator is null || _qteTrack is null || _qteGreatZone is null || _qteCritZone is null || _qteGoodZone is null) return;
-
-        var width = _qteTrackContainer.Size.X;
-        var height = Mathf.Max(_qteTrackContainer.Size.Y, 24f);
-        if (width <= 0 || height <= 0) return;
-
-        width = Mathf.Max(width, _qteTrackContainer.CustomMinimumSize.X);
-        height = Mathf.Max(height, _qteTrackContainer.CustomMinimumSize.Y);
-
-        var targetNorm = _qteTargetTime / _qteDuration;
-        float critHalf = _qteCritWindow / _qteDuration;
-        float greatHalf = _qteGreatWindow / _qteDuration;
-        float goodHalf = _qteGoodWindow / _qteDuration;
-
-        float critStart = Mathf.Clamp(targetNorm - critHalf, 0f, 1f) * width;
-        float critEnd = Mathf.Clamp(targetNorm + critHalf, 0f, 1f) * width;
-        float greatStart = Mathf.Clamp(targetNorm - greatHalf, 0f, 1f) * width;
-        float greatEnd = Mathf.Clamp(targetNorm + greatHalf, 0f, 1f) * width;
-        float goodStart = Mathf.Clamp(targetNorm - goodHalf, 0f, 1f) * width;
-        float goodEnd = Mathf.Clamp(targetNorm + goodHalf, 0f, 1f) * width;
-
-        _qteTrack.CustomMinimumSize = new Vector2(_qteTrack.CustomMinimumSize.X, height);
-        SetDeferredRect(_qteGoodZone, goodStart, goodEnd, height);
-        SetDeferredRect(_qteGreatZone, greatStart, greatEnd, height);
-        SetDeferredRect(_qteCritZone, critStart, critEnd, height);
-
-        PositionZoneLabel(_qteGoodLabel, goodStart, goodEnd, height);
-        PositionZoneLabel(_qteGreatLabel, greatStart, greatEnd, height);
-        PositionZoneLabel(_qteCritLabel, critStart, critEnd, height);
-    }
-
-    private void UpdateQteVisuals(float progress)
-    {
-        if (_qteIndicator is null || _qteTrackContainer is null) return;
-        var width = _qteTrackContainer.Size.X;
-        var indicatorWidth = _qteIndicator.Size.X > 0 ? _qteIndicator.Size.X : 8;
-        var x = Mathf.Clamp(progress * width - indicatorWidth * 0.5f, 0, Mathf.Max(0, width - indicatorWidth));
-        _qteIndicator.SetDeferred("position", new Vector2(x, 0));
-    }
-
-    private static void SetDeferredRect(ColorRect rect, float start, float end, float height)
-    {
-        var size = Mathf.Max(0, end - start);
-        rect.SetDeferred("position", new Vector2(start, 0));
-        rect.SetDeferred("size", new Vector2(size, height));
-    }
-
-    private void PositionZoneLabel(Label? label, float start, float end, float height)
-    {
-        if (label is null) return;
-        var zoneWidth = Mathf.Max(0, end - start);
-        var labelWidth = label.GetMinimumSize().X;
-        var center = start + zoneWidth * 0.5f;
-        var posX = center - labelWidth * 0.5f;
-        label.SetDeferred("position", new Vector2(posX, 0));
-        label.SetDeferred("size", new Vector2(zoneWidth, height));
-        label.SetDeferred("horizontal_alignment", (int)HorizontalAlignment.Center);
-        label.SetDeferred("vertical_alignment", (int)VerticalAlignment.Center);
-    }
-
-    private static Label CreateZoneLabel(string text)
-    {
-        return new Label
-        {
-            Text = text,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-            Modulate = new Color(0, 0, 0, 0.85f)
-        };
-    }
-
-    private void ShowAbilityPanel(string attackerId, string targetId)
-    {
-        if (_abilityRoot is null || _abilityList is null) return;
-        if (!_unitAbilities.TryGetValue(attackerId, out var abilities)) return;
-
-        ClearChildren(_abilityList);
-        foreach (var abilityId in abilities)
-        {
-            var button = new Button { Text = abilityId };
-            button.Pressed += () => OnAbilitySelected(attackerId, targetId, abilityId);
-            _abilityList.AddChild(button);
-        }
-
-        _pendingAttackerId = attackerId;
-        _pendingTargetId = targetId;
-        _abilityRoot.Visible = true;
-        _abilityPanelOpen = true;
-    }
-
-    private void HideAbilityPanel()
-    {
-        if (_abilityRoot != null) _abilityRoot.Visible = false;
-        _abilityPanelOpen = false;
-        _pendingAttackerId = null;
-        _pendingTargetId = null;
-    }
-
-    private void OnAbilitySelected(string attackerId, string targetId, string abilityId)
-    {
-        HideAbilityPanel();
-        var isPlayerControlled = _unitTeams.TryGetValue(attackerId, out var team) && team <= 1;
-        if (isPlayerControlled)
-        {
-            BeginQte(attackerId, targetId);
-        }
-        else
-        {
-            ExecuteAttack(attackerId, targetId, new TimingBarInput(_qteTargetTime, _qteTargetTime));
-        }
-    }
-
-    private void CreatePhaseLabel()
-    {
-        _phaseLabel = new Label
-        {
-            Name = "PhaseLabel",
-            Text = "Phase: Idle",
-            AnchorLeft = 0.4f,
-            AnchorRight = 0.6f,
-            AnchorTop = 0.02f,
-            AnchorBottom = 0.1f,
-            HorizontalAlignment = HorizontalAlignment.Center
-        };
-
-        _uiRoot?.AddChild(_phaseLabel);
-    }
+    private void UpdatePhaseUi() => _battleUi?.UpdatePhase(_phase);
 
     private void CheckBattleEnd()
     {
-        var aliveTeams = _unitTeams.Values.Distinct().ToList();
+        if (_units is null) return;
+        var aliveTeams = _units.GetAliveTeams().Distinct().ToList();
         if (aliveTeams.Count <= 1 && aliveTeams.Count > 0)
         {
             _battleEnded = true;
@@ -1095,31 +755,21 @@ public partial class BattleSceneRoot : Node3D
 
     private void TryAdvanceAfterMovement()
     {
-        if (_isMoving || _phase == BattlePhase.Moving || _phase == BattlePhase.Qte) return;
+        if ((_movement?.IsMoving ?? false) || _phase == BattlePhase.Moving || _phase == BattlePhase.Qte) return;
         if (!_pendingTurnAdvance) return;
 
         _pendingTurnAdvance = false;
         AdvanceTurnAndFocus();
     }
 
-    private MeshInstance3D BuildCapsuleMesh(Color color)
+    private string GetDisplayName(string unitId) => _units is null ? unitId : _units.GetDisplayName(unitId);
+
+    private string GetAbilityLabel(string abilityId)
     {
-        var mesh = new CapsuleMesh
-        {
-            Radius = 0.5f,
-            Height = 1.6f
-        };
-
-        var material = new StandardMaterial3D
-        {
-            AlbedoColor = color
-        };
-
-        return new MeshInstance3D
-        {
-            Mesh = mesh,
-            MaterialOverride = material,
-            Position = new Vector3(0, 0.8f, 0)
-        };
+        if (_battleManager is not null && _battleManager.TryGetAbility(abilityId, out var ability) && !string.IsNullOrEmpty(ability.Name))
+            return ability.Name;
+        return abilityId;
     }
+
+    private Color GetColorForUnit(string unitId) => _units is null ? Colors.White : _units.GetColor(unitId);
 }
