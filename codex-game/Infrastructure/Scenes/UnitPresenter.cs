@@ -22,6 +22,7 @@ public sealed class UnitPresenter
     private readonly Dictionary<string, Vector3> _unitFacing = new();
     private readonly Dictionary<string, string> _unitNames = new();
     private readonly Dictionary<string, Color> _unitColors = new();
+    private readonly Dictionary<int, bool> _teamAiControl = new();
 
     public UnitPresenter(Node unitsRoot, BattleManager battleManager)
     {
@@ -46,11 +47,27 @@ public sealed class UnitPresenter
         _unitFacing[state.Id] = Vector3.Forward;
         _unitNames[state.Id] = displayName;
         _unitColors[state.Id] = color;
+        if (!_teamAiControl.ContainsKey(team))
+            _teamAiControl[team] = team > 1;
         AttachHealthBar(node, state);
         _battleManager.RegisterUnit(node, state);
     }
 
     public bool TryGetTeam(string unitId, out int team) => _unitTeams.TryGetValue(unitId, out team);
+
+    public bool IsAiControlled(string unitId)
+    {
+        if (_unitTeams.TryGetValue(unitId, out var team))
+            return IsAiTeam(team);
+        return false;
+    }
+
+    public bool IsAiTeam(int team)
+    {
+        if (_teamAiControl.TryGetValue(team, out var isAi))
+            return isAi;
+        return team > 1;
+    }
 
     public IReadOnlyList<string> GetAbilities(string unitId) =>
         _unitAbilities.TryGetValue(unitId, out var abilities) ? abilities : new List<string>();
@@ -99,7 +116,7 @@ public sealed class UnitPresenter
     public Node3D? GetNode(string unitId) =>
         _unitNodes.TryGetValue(unitId, out var node) ? node : null;
 
-    public Node3D? GetNodeAtPosition(AstarPathfinding pathfinding, Vector3 position, string? excludeId = null)
+    public Node3D? GetNodeAtPosition(IPathfinder pathfinding, Vector3 position, string? excludeId = null)
     {
         var cell = pathfinding.WorldToCell(position);
         foreach (var kvp in _unitNodes)
@@ -114,7 +131,7 @@ public sealed class UnitPresenter
         return null;
     }
 
-    public bool IsCellOccupied(AstarPathfinding pathfinding, Vector3I cell, string? ignoreId = null)
+    public bool IsCellOccupied(IPathfinder pathfinding, Vector3I cell, string? ignoreId = null)
     {
         foreach (var kvp in _unitNodes)
         {
@@ -167,6 +184,10 @@ public sealed class UnitPresenter
     }
 
     public IEnumerable<int> GetAliveTeams() => _unitTeams.Values.Distinct();
+
+    public void SetTeamAiControl(int team, bool isAiControlled) => _teamAiControl[team] = isAiControlled;
+
+    public IEnumerable<string> GetAllUnitIds() => _unitNodes.Keys;
 
     private static MeshInstance3D BuildCapsuleMesh(Color color)
     {

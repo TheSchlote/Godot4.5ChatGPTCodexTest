@@ -14,30 +14,41 @@ internal sealed class BattleUi
     public int TurnOrderSlotCount => _turnOrderLabels.Count;
 
     private readonly Label _phaseLabel;
+    private readonly Label _actionsLabel;
     private readonly PanelContainer _abilityRoot;
     private readonly VBoxContainer _abilityList;
+    private readonly Label _toastLabel;
     private readonly List<Label> _turnOrderLabels = new();
     private readonly Label _gameOverLabel;
     private readonly Button _restartButton;
+    private readonly Button _endTurnButton;
     private Action? _cancelHandler;
     private Action? _cancelWrapper;
+    private readonly Action _onEndTurn;
 
-    public BattleUi(Node parent, Action onRestart, Control? existingRoot = null)
+    public BattleUi(Node parent, Action onRestart, Action onEndTurn, Control? existingRoot = null)
     {
         Root = existingRoot ?? CreateRoot();
+        _onEndTurn = onEndTurn;
         NormalizeRootLayout(Root);
         _phaseLabel = CreatePhaseLabel();
+        _actionsLabel = CreateActionsLabel();
+        _toastLabel = CreateToastLabel();
         _abilityRoot = CreateAbilityPanel(out _abilityList);
         _gameOverLabel = CreateGameOverLabel();
         _restartButton = CreateRestartButton(onRestart);
+        _endTurnButton = CreateEndTurnButton(onEndTurn);
         var turnOrderPanel = CreateTurnOrderPanel();
 
         Qte = new QteUi(Root);
 
         Root.AddChild(_gameOverLabel);
         Root.AddChild(_restartButton);
+        Root.AddChild(_endTurnButton);
         Root.AddChild(turnOrderPanel);
         Root.AddChild(_phaseLabel);
+        Root.AddChild(_actionsLabel);
+        Root.AddChild(_toastLabel);
         Root.AddChild(_abilityRoot);
 
         if (existingRoot is null)
@@ -79,6 +90,20 @@ internal sealed class BattleUi
                 label.Text = "--";
             }
         }
+    }
+
+    public void UpdateActions(bool moveAvailable, bool actionAvailable)
+    {
+        var moveText = moveAvailable ? "Move: Ready" : "Move: Spent";
+        var actText = actionAvailable ? "Action: Ready" : "Action: Spent";
+        _actionsLabel.Text = $"{moveText} | {actText}";
+    }
+
+    public void ShowToast(string message, float durationSeconds = 1.5f)
+    {
+        _toastLabel.Text = message;
+        _toastLabel.Visible = true;
+        Root.GetTree().CreateTimer(durationSeconds).Timeout += () => _toastLabel.Visible = false;
     }
 
     public void ShowAbilityPanel(IEnumerable<AbilityOption> abilities, Action<string> onSelected, Action<string>? onHover = null, Action? onCancel = null)
@@ -197,6 +222,47 @@ internal sealed class BattleUi
         return button;
     }
 
+    private Button CreateEndTurnButton(Action onEndTurn)
+    {
+        var button = new Button
+        {
+            Name = "EndTurnButton",
+            Text = "End Turn (T / Start)",
+            AnchorLeft = 0,
+            AnchorTop = 0,
+            AnchorRight = 0,
+            AnchorBottom = 0,
+            OffsetLeft = 10,
+            OffsetTop = 50,
+            SizeFlagsHorizontal = Control.SizeFlags.ShrinkBegin,
+            SizeFlagsVertical = Control.SizeFlags.ShrinkBegin
+        };
+        button.Pressed += onEndTurn;
+        return button;
+    }
+
+    private Label CreateToastLabel()
+    {
+        var label = new Label
+        {
+            Name = "ToastLabel",
+            Text = string.Empty,
+            Visible = false,
+            AnchorLeft = 0.5f,
+            AnchorRight = 0.5f,
+            AnchorTop = 0,
+            AnchorBottom = 0,
+            OffsetLeft = -150,
+            OffsetRight = 150,
+            OffsetTop = 60,
+            SizeFlagsHorizontal = Control.SizeFlags.ShrinkCenter,
+            SizeFlagsVertical = Control.SizeFlags.ShrinkCenter
+        };
+        label.AddThemeColorOverride("font_color", new Color(1, 1, 1, 0.9f));
+        label.AddThemeFontSizeOverride("font_size", 16);
+        return label;
+    }
+
     private PanelContainer CreateTurnOrderPanel()
     {
         const int slotCount = 6;
@@ -240,6 +306,25 @@ internal sealed class BattleUi
         }
 
         return panel;
+    }
+
+    private Label CreateActionsLabel()
+    {
+        var label = new Label
+        {
+            Text = "Move: Ready | Action: Ready",
+            AnchorLeft = 0,
+            AnchorTop = 0,
+            AnchorRight = 0,
+            AnchorBottom = 0,
+            OffsetLeft = 10,
+            OffsetTop = 28,
+            SizeFlagsHorizontal = Control.SizeFlags.ShrinkBegin,
+            SizeFlagsVertical = Control.SizeFlags.ShrinkBegin
+        };
+        label.AddThemeColorOverride("font_color", Colors.White);
+        label.AddThemeFontSizeOverride("font_size", 16);
+        return label;
     }
 
     private PanelContainer CreateAbilityPanel(out VBoxContainer abilityList)

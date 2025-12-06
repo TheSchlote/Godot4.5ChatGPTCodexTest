@@ -6,7 +6,7 @@ namespace CodexGame.Infrastructure.Pathfinding;
 /// <summary>
 /// Lightweight grid-based A* for tile-aligned movement/visualization.
 /// </summary>
-public partial class AstarPathfinding : Node3D
+public partial class AstarPathfinding : Node3D, IPathfinder
 {
     private readonly AStar3D _astar = new();
     private readonly HashSet<Vector3I> _blocked = new();
