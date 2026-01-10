@@ -1,4 +1,5 @@
 using System;
+using CodexGame.Domain.QTE;
 using CodexGame.Domain.Stats;
 
 namespace CodexGame.Domain.Units;
@@ -8,7 +9,7 @@ namespace CodexGame.Domain.Units;
 /// </summary>
 public sealed class UnitState
 {
-    public UnitState(string id, StatBlock stats, Element affinity, int moveRange)
+    public UnitState(string id, StatBlock stats, Element affinity, int moveRange, QTEProfile? defaultQte = null)
     {
         Id = id;
         Stats = stats;
@@ -16,12 +17,14 @@ public sealed class UnitState
         MoveRange = moveRange;
         CurrentHP = stats.MaxHP;
         CurrentMP = stats.MaxMP;
+        DefaultQTE = defaultQte ?? new QTEProfile(QTEType.TimingBar);
     }
 
     public string Id { get; }
     public Element Affinity { get; }
     public StatBlock Stats { get; }
     public int MoveRange { get; }
+    public QTEProfile DefaultQTE { get; }
 
     public int CurrentHP { get; private set; }
     public int CurrentMP { get; private set; }

@@ -66,7 +66,7 @@ internal sealed class AbilitySelectState : BattleState
     private IEnumerable<AbilityOption> BuildOptions()
     {
         var ids = Ctx.Units.GetAbilities(_attackerId);
-        return ids.Select(id => new AbilityOption(id, Ctx.Root.GetAbilityLabel(id)));
+        return ids.Select(id => Ctx.Root.GetAbilityOption(_attackerId, id));
     }
 
     private void SelectAbility(string abilityId)

@@ -10,4 +10,6 @@ public interface IAIBehavior
 
 public sealed record AbilityChoice(string AbilityId, string TargetUnitId);
 
-public sealed record MapState(int Width, int Height);
+public sealed record UnitSnapshot(string UnitId, int Team, UnitState State, IReadOnlyList<string> Abilities);
+
+public sealed record MapState(int Width, int Height, IReadOnlyList<UnitSnapshot> Units);

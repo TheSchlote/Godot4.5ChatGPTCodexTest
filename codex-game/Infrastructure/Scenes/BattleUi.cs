@@ -114,6 +114,7 @@ internal sealed class BattleUi
         foreach (var ability in abilities)
         {
             var button = new Button { Text = ability.Label, FocusMode = Control.FocusModeEnum.All };
+            button.Disabled = !ability.Enabled;
             button.Pressed += () => onSelected(ability.Id);
             if (onHover != null)
             {
@@ -121,7 +122,8 @@ internal sealed class BattleUi
                 button.FocusEntered += () => onHover(ability.Id);
             }
             _abilityList.AddChild(button);
-            firstButton ??= button;
+            if (firstButton == null && ability.Enabled)
+                firstButton = button;
         }
 
         _abilityRoot.Visible = true;
@@ -578,4 +580,4 @@ internal sealed class QteUi
     }
 }
 
-internal readonly record struct AbilityOption(string Id, string Label);
+internal readonly record struct AbilityOption(string Id, string Label, bool Enabled);

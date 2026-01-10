@@ -1,39 +1,61 @@
-using CodexGame.Domain.QTE;
+using CodexGame.Domain.AI;
 using Godot;
 using System.Linq;
 using System.Collections.Generic;
 using CodexGame.Infrastructure.Scenes;
+using CodexGame.Application.Battle;
 
 namespace CodexGame.Infrastructure.Controllers;
 
 /// <summary>
-/// Minimal AI helper: picks nearest enemy and triggers a basic attack.
+/// Domain-driven AI helper that selects an ability/target based on configured behaviors.
 /// </summary>
 public sealed class AiTurnController
 {
     private readonly UnitPresenter _units;
+    private readonly BattleManager _battleManager;
 
-    public AiTurnController(UnitPresenter units)
+    public AiTurnController(UnitPresenter units, BattleManager battleManager)
     {
         _units = units;
+        _battleManager = battleManager;
     }
 
-    public string? SelectTarget(string activeUnitId, int aiTeam)
+    public AbilityChoice? ChooseAction(string activeUnitId, Vector2I mapSize)
     {
-        var enemies = _units.GetAliveTeams()
-            .Where(team => team != aiTeam)
-            .SelectMany(team => _units.GetUnitsByTeam(team))
-            .ToList();
+        if (!_battleManager.TryGetUnit(activeUnitId, out var self) || self is null)
+            return null;
 
-        if (enemies.Count == 0) return null;
+        var behavior = ResolveBehavior(activeUnitId);
+        var units = BuildSnapshots();
+        var mapState = new MapState(mapSize.X, mapSize.Y, units);
+        var choice = behavior.EvaluateAction(self, mapState);
+        if (string.IsNullOrEmpty(choice.AbilityId) || string.IsNullOrEmpty(choice.TargetUnitId))
+            return null;
 
-        var selfNode = _units.GetNode(activeUnitId);
-        if (selfNode is null) return enemies.First();
-
-        // Search entire map for nearest enemy (no range cap).
-        return enemies
-            .OrderBy(id => selfNode.GlobalPosition.DistanceTo(_units.GetNode(id)!.GlobalPosition))
-            .First();
+        return choice;
     }
 
+    private IReadOnlyList<UnitSnapshot> BuildSnapshots()
+    {
+        var list = new List<UnitSnapshot>();
+        foreach (var unitId in _units.GetAllUnitIds())
+        {
+            if (!_units.TryGetTeam(unitId, out var team)) continue;
+            if (!_battleManager.TryGetUnit(unitId, out var state) || state is null) continue;
+            var abilities = _units.GetAbilities(unitId);
+            list.Add(new UnitSnapshot(unitId, team, state, abilities));
+        }
+        return list;
+    }
+
+    private IAIBehavior ResolveBehavior(string unitId)
+    {
+        var profile = _units.GetAiProfileId(unitId);
+        return profile?.ToLowerInvariant() switch
+        {
+            "bruiser" => new BruiserBehavior(_battleManager.AbilityCatalog),
+            _ => new BruiserBehavior(_battleManager.AbilityCatalog)
+        };
+    }
 }

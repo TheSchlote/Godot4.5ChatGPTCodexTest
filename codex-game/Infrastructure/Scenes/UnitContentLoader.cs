@@ -61,7 +61,8 @@ public sealed class UnitContentLoader
             new StatBlock(dto.Stats.MaxHP, dto.Stats.MaxMP, dto.Stats.PhysicalAttack, dto.Stats.SpecialAttack, dto.Stats.PhysicalDefense, dto.Stats.SpecialDefense, dto.Stats.Speed),
             dto.MoveRange,
             dto.Abilities ?? Array.Empty<string>(),
-            new QTEProfile(ParseEnum(dto.Qte.Type, QTEType.None), dto.Qte.Difficulty, dto.Qte.CritWindow));
+            new QTEProfile(ParseEnum(dto.Qte.Type, QTEType.None), dto.Qte.Difficulty, dto.Qte.CritWindow, dto.Qte.DurationSeconds),
+            dto.AiProfileId);
 
         var color = new Color(dto.Color.R, dto.Color.G, dto.Color.B, dto.Color.A ?? 1f);
         var spawn = dto.Spawn ?? new SpawnDto();
@@ -88,6 +89,7 @@ public sealed class UnitContentLoader
         public ColorDto Color { get; init; } = new();
         public int Team { get; init; }
         public SpawnDto? Spawn { get; init; }
+        public string? AiProfileId { get; init; }
     }
 
     private sealed class StatDto
@@ -106,6 +108,7 @@ public sealed class UnitContentLoader
         public string Type { get; init; } = nameof(QTEType.None);
         public float Difficulty { get; init; } = 1f;
         public float CritWindow { get; init; } = 0.1f;
+        public float DurationSeconds { get; init; } = 1.5f;
     }
 
     private sealed class ColorDto

@@ -34,6 +34,7 @@ public partial class BattleManager : Node
     }
 
     public void RegisterAbility(Ability ability) => _abilityCatalog.Register(ability);
+    public AbilityCatalog AbilityCatalog => _abilityCatalog;
 
     /// <summary>
     /// Advances the turn queue deterministically by one logical step (no real-time dependency).
@@ -47,22 +48,38 @@ public partial class BattleManager : Node
         GD.Print($"Unit {readyUnitId} is ready to act.");
     }
 
-    public AbilityResult ExecuteAbility(string abilityId, string attackerId, string defenderId, TimingBarInput qteInput, Facing facing)
+    public AbilityResult ExecuteAbility(string abilityId, string attackerId, string defenderId, TimingBarInput qteInput, Facing facing, bool consumeResources = true)
     {
         var ability = _abilityCatalog.Get(abilityId);
         var attacker = _units[attackerId];
         var defender = _units[defenderId];
 
-        var qteProfile = new QTEProfile(ability.QTE);
+        var qteProfile = GetQteProfile(attackerId, ability);
         var qteResult = _timingBarEvaluator.Evaluate(qteInput, qteProfile);
 
-        var context = new AbilityContext(attacker, defender, qteResult, facing);
+        var context = new AbilityContext(attacker, defender, qteResult, facing, ability);
         var result = ability.DamageFormula(context);
 
         defender.ApplyDamage(result.Damage);
-        _turnQueue.Consume(attackerId);
+        if (consumeResources)
+        {
+            attacker.SpendMP(ability.MPCost);
+            _turnQueue.Consume(attackerId);
+        }
 
         return result;
+    }
+
+    public QTEProfile GetQteProfile(string unitId, string abilityId)
+    {
+        var ability = _abilityCatalog.Get(abilityId);
+        return GetQteProfile(unitId, ability);
+    }
+
+    private QTEProfile GetQteProfile(string unitId, Ability ability)
+    {
+        var unit = _units[unitId];
+        return new QTEProfile(ability.QTE, unit.DefaultQTE.Difficulty, unit.DefaultQTE.CritWindow, unit.DefaultQTE.DurationSeconds);
     }
 
     public string? AdvanceToNextReady() => _turnQueue.AdvanceToNextReady();

@@ -16,7 +16,8 @@ public sealed class TimingBarEvaluator : IQTEvaluator<TimingBarInput>
             throw new InvalidOperationException("TimingBarEvaluator requires TimingBar profile.");
 
         var delta = Math.Abs(input.PressTime - input.TargetTime);
-        var critWindow = profile.CritWindow;
+        var difficulty = profile.Difficulty <= 0 ? 1f : profile.Difficulty;
+        var critWindow = profile.CritWindow / difficulty;
         var greatWindow = critWindow * 2.5f;
         var goodWindow = critWindow * 4f;
 

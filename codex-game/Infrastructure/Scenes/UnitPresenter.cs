@@ -22,6 +22,7 @@ public sealed class UnitPresenter
     private readonly Dictionary<string, Vector3> _unitFacing = new();
     private readonly Dictionary<string, string> _unitNames = new();
     private readonly Dictionary<string, Color> _unitColors = new();
+    private readonly Dictionary<string, string?> _unitAiProfiles = new();
     private readonly Dictionary<int, bool> _teamAiControl = new();
 
     public UnitPresenter(Node unitsRoot, BattleManager battleManager)
@@ -39,7 +40,7 @@ public sealed class UnitPresenter
         return node;
     }
 
-    public void RegisterUnit(UnitState state, Node3D node, int team, IEnumerable<string> abilities, string displayName, Color color)
+    public void RegisterUnit(UnitState state, Node3D node, int team, IEnumerable<string> abilities, string displayName, Color color, string? aiProfileId = null)
     {
         _unitNodes[state.Id] = node;
         _unitTeams[state.Id] = team;
@@ -47,6 +48,7 @@ public sealed class UnitPresenter
         _unitFacing[state.Id] = Vector3.Forward;
         _unitNames[state.Id] = displayName;
         _unitColors[state.Id] = color;
+        _unitAiProfiles[state.Id] = aiProfileId;
         if (!_teamAiControl.ContainsKey(team))
             _teamAiControl[team] = team > 1;
         AttachHealthBar(node, state);
@@ -113,6 +115,9 @@ public sealed class UnitPresenter
         return Colors.White;
     }
 
+    public string? GetAiProfileId(string unitId) =>
+        _unitAiProfiles.TryGetValue(unitId, out var profile) ? profile : null;
+
     public Node3D? GetNode(string unitId) =>
         _unitNodes.TryGetValue(unitId, out var node) ? node : null;
 
@@ -151,7 +156,7 @@ public sealed class UnitPresenter
         if (!_healthBars.TryGetValue(unitId, out var label)) return;
         if (!_battleManager.TryGetUnit(unitId, out var state) || state is null) return;
 
-        label.Text = $"{state.CurrentHP}/{state.Stats.MaxHP}";
+        label.Text = $"{state.CurrentHP}/{state.Stats.MaxHP} | MP {state.CurrentMP}/{state.Stats.MaxMP}";
     }
 
     public void UpdateHealthBarFacing(Camera3D? camera)
@@ -180,6 +185,7 @@ public sealed class UnitPresenter
         _unitTeams.Remove(unitId);
         _unitNodes.Remove(unitId);
         _unitAbilities.Remove(unitId);
+        _unitAiProfiles.Remove(unitId);
         _battleManager.RemoveUnit(unitId);
     }
 
@@ -215,7 +221,7 @@ public sealed class UnitPresenter
         var label = new Label3D
         {
             Name = $"{state.Id}_Health",
-            Text = $"{state.CurrentHP}/{state.Stats.MaxHP}",
+            Text = $"{state.CurrentHP}/{state.Stats.MaxHP} | MP {state.CurrentMP}/{state.Stats.MaxMP}",
             Position = new Vector3(0, 2.2f, 0),
             PixelSize = 0.01f
         };

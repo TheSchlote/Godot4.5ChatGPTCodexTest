@@ -10,16 +10,23 @@ public partial class AstarPathfinding : Node3D, IPathfinder
 {
     private readonly AStar3D _astar = new();
     private readonly HashSet<Vector3I> _blocked = new();
+    private readonly Dictionary<Vector3I, float> _costs = new();
+    private readonly Dictionary<Vector3I, int> _elevations = new();
     private int _width;
     private int _height;
     private float _tileSize = 2f;
+    private float _tileHeight = 0.2f;
 
-    public void SetupGrid(int width, int height, float tileSize = 2f)
+    public void SetupGrid(int width, int height, float tileSize = 2f, float tileHeight = 0.2f)
     {
         _width = width;
         _height = height;
         _tileSize = tileSize;
+        _tileHeight = tileHeight;
         _astar.Clear();
+        _blocked.Clear();
+        _costs.Clear();
+        _elevations.Clear();
 
         for (var x = 0; x < width; x++)
         {
@@ -46,6 +53,18 @@ public partial class AstarPathfinding : Node3D, IPathfinder
         RefreshCell(cell);
     }
 
+    public void SetCellCost(Vector3I cell, float cost)
+    {
+        _costs[cell] = cost <= 0 ? 1f : cost;
+        RefreshCell(cell);
+    }
+
+    public void SetElevation(Vector3I cell, int elevation)
+    {
+        _elevations[cell] = elevation;
+        RefreshCell(cell);
+    }
+
     public Vector3[] GetPath(Vector3 start, Vector3 end)
     {
         var startCell = WorldToCell(start);
@@ -64,7 +83,7 @@ public partial class AstarPathfinding : Node3D, IPathfinder
             Mathf.Clamp(Mathf.RoundToInt(world.Z / _tileSize), 0, _height - 1));
 
     public Vector3 CellToWorld(Vector3I cell) =>
-        new(cell.X * _tileSize, 0, cell.Z * _tileSize);
+        new(cell.X * _tileSize, GetElevation(cell) * _tileHeight, cell.Z * _tileSize);
 
     public MeshInstance3D VisualizePath(Vector3[] path, Node3D parent, MeshInstance3D? reuse = null)
     {
@@ -115,7 +134,8 @@ public partial class AstarPathfinding : Node3D, IPathfinder
     {
         if (!IsWalkable(cell)) return;
         var id = CellToId(cell);
-        _astar.AddPoint(id, CellToWorld(cell), 1);
+        _astar.AddPoint(id, CellToWorld(cell), GetCost(cell));
+        ConnectNeighbors(id);
     }
 
     private bool IsWalkable(Vector3I cell)
@@ -138,6 +158,12 @@ public partial class AstarPathfinding : Node3D, IPathfinder
                 _astar.ConnectPoints(id, neighborId, true);
         }
     }
+
+    private float GetCost(Vector3I cell) =>
+        _costs.TryGetValue(cell, out var cost) ? cost : 1f;
+
+    private int GetElevation(Vector3I cell) =>
+        _elevations.TryGetValue(cell, out var elevation) ? elevation : 0;
 
     private int CellToId(Vector3I pos) => pos.X + pos.Z * 1000;
     private Vector3I IdToCell(int id) => new(id % 1000, 0, id / 1000);

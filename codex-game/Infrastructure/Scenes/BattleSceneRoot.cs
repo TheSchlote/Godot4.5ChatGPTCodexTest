@@ -5,6 +5,7 @@ using CodexGame.Domain.Units;
 using CodexGame.Infrastructure.Pathfinding;
 using CodexGame.Infrastructure.Controllers;
 using Godot;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using CodexGame.Domain.Abilities;
@@ -107,7 +108,7 @@ public partial class BattleSceneRoot : Node3D
         SpawnUnits();
         CreateCursor();
         CreateMovementController();
-        _aiController = new AiTurnController(_units);
+        _aiController = new AiTurnController(_units, _battleManager);
         InitializeStateMachine();
     }
 
@@ -224,6 +225,11 @@ public partial class BattleSceneRoot : Node3D
         if (targetNode != null)
         {
             if (!_actionAvailable) return;
+            if (!IsTargetAllowed(attackerId, targetNode.Name))
+            {
+                _battleUi?.ShowToast("Cannot target ally.");
+                return;
+            }
             if (_battleContext is null || _stateMachine is null) return;
             _stateMachine.ChangeState(EnsureAbilityState(attackerId, targetNode.Name));
         }
@@ -259,11 +265,13 @@ public partial class BattleSceneRoot : Node3D
         if (attackerNode is null) return;
 
         var abilities = abilityIds
-            .Select(id => new AbilityOption(id, GetAbilityLabel(id)))
+            .Select(id => GetAbilityOption(attackerId, id))
             .ToList();
 
         _battleUi.ShowAbilityPanel(abilities, abilityId => OnAbilitySelected(attackerId, targetId, abilityId), abilityId => ShowAbilityRange(attackerId, abilityId), HideAbilityPanel);
-        ShowAbilityRange(attackerId, abilities.First().Id);
+        var firstEnabled = abilities.FirstOrDefault(a => a.Enabled);
+        var first = !string.IsNullOrEmpty(firstEnabled.Id) ? firstEnabled : abilities.First();
+        ShowAbilityRange(attackerId, first.Id);
     }
 
     internal void HideAbilityPanel()
@@ -280,6 +288,13 @@ public partial class BattleSceneRoot : Node3D
         _pendingAbilityId = string.IsNullOrEmpty(abilityId) ? DefaultAbilityId : abilityId;
         var isPlayerControlled = _units is not null && _units.TryGetTeam(attackerId, out var team) && team <= 1;
 
+        if (!HasEnoughMp(attackerId, _pendingAbilityId))
+        {
+            _battleUi?.ShowToast("Not enough MP.");
+            _abilityExecuting = false;
+            return;
+        }
+
         if (!IsTargetInRange(attackerId, targetId, _pendingAbilityId))
         {
             if (_moveAvailable && TryMoveIntoRangeAndUse(attackerId, targetId, _pendingAbilityId, isPlayerControlled))
@@ -293,12 +308,14 @@ public partial class BattleSceneRoot : Node3D
     private void ExecuteAbilityFlow(string attackerId, string targetId, string abilityId, bool isPlayerControlled)
     {
         HideAbilityPanel();
+        var qteProfile = _battleManager?.GetQteProfile(attackerId, abilityId);
         if (isPlayerControlled)
         {
             if (_qteController is null) return;
             _phase = BattlePhase.Qte;
             UpdatePhaseUi();
-            _qteController.Begin(attackerId, targetId);
+            if (qteProfile is null) return;
+            _qteController.Begin(attackerId, targetId, qteProfile);
             if (_stateMachine is not null && _qteState is not null)
             {
                 _stateMachine.ChangeState(_qteState);
@@ -306,7 +323,8 @@ public partial class BattleSceneRoot : Node3D
         }
         else
         {
-            var targetTime = _qteController?.TargetTime ?? 0.75f;
+            if (qteProfile is null) return;
+            var targetTime = GetTargetTimeForProfile(qteProfile);
             ExecuteAttack(attackerId, targetId, new TimingBarInput(targetTime, targetTime), abilityId);
         }
     }
@@ -362,10 +380,29 @@ public partial class BattleSceneRoot : Node3D
         if (_battleManager is null) return;
         _actionAvailable = false;
         var resolvedAbility = string.IsNullOrEmpty(abilityId) ? DefaultAbilityId : abilityId;
-        var facing = GetFacingForAttack(attackerId, targetId);
-        _battleManager.ExecuteAbility(resolvedAbility, attackerId, targetId, input, facing);
-        _units?.UpdateHealthBar(targetId);
-        HandleDeaths(targetId);
+        if (!_battleManager.TryGetAbility(resolvedAbility, out var ability)) return;
+
+        var targets = GetTargetsForAbility(attackerId, targetId, ability).ToList();
+        if (targets.Count == 0)
+        {
+            _actionAvailable = true;
+            _abilityExecuting = false;
+            return;
+        }
+
+        var primaryFacing = GetFacingForAttack(attackerId, targetId);
+        for (int i = 0; i < targets.Count; i++)
+        {
+            var currentTarget = targets[i];
+            var facing = currentTarget == targetId ? primaryFacing : ComputeFacing(attackerId, currentTarget);
+            _battleManager.ExecuteAbility(resolvedAbility, attackerId, currentTarget, input, facing, consumeResources: i == 0);
+            _units?.UpdateHealthBar(currentTarget);
+            HandleDeaths(currentTarget);
+            if (ability.Tags.Contains(AbilityTag.Knockback))
+                TryApplyKnockback(attackerId, currentTarget);
+        }
+
+        _units?.UpdateHealthBar(attackerId);
         HideAbilityPanel();
         _pendingAbilityId = DefaultAbilityId;
         _abilityExecuting = false;
@@ -399,30 +436,41 @@ public partial class BattleSceneRoot : Node3D
         try
         {
             _gimbal?.SmoothFocus(GetNodeById(_activeUnitId)?.GlobalPosition ?? _mapCenter);
-            var team = _units.TryGetTeam(_activeUnitId, out var t) ? t : 0;
-            var target = _aiController.SelectTarget(_activeUnitId, team);
-            if (target == null)
+            var choice = _aiController.ChooseAction(_activeUnitId, _mapSize);
+            if (choice is null)
             {
                 _battleManager.ConsumeTurn(_activeUnitId);
                 _pendingTurnAdvance = true;
                 return;
             }
 
-            var targetTime = _qteController?.TargetTime ?? 0.75f;
-            var abilityId = ChooseAiAbility(_activeUnitId);
+            var abilityId = choice.AbilityId;
+            if (!HasEnoughMp(_activeUnitId, abilityId))
+            {
+                abilityId = DefaultAbilityId;
+                if (!HasEnoughMp(_activeUnitId, abilityId))
+                {
+                    _battleManager.ConsumeTurn(_activeUnitId);
+                    _pendingTurnAdvance = true;
+                    return;
+                }
+            }
+            var target = choice.TargetUnitId;
+            var qteProfile = _battleManager.GetQteProfile(_activeUnitId, abilityId);
+            var targetTime = GetTargetTimeForProfile(qteProfile);
 
             var activeNode = _units.GetNode(_activeUnitId);
-        var targetNode = _units.GetNode(target);
-        if (activeNode is null || targetNode is null)
-        {
-            _battleManager.ConsumeTurn(_activeUnitId);
-            _pendingTurnAdvance = true;
-            if (_stateMachine is not null && _turnAdvanceState is not null)
+            var targetNode = _units.GetNode(target);
+            if (activeNode is null || targetNode is null)
             {
-                _stateMachine.ChangeState(_turnAdvanceState);
+                _battleManager.ConsumeTurn(_activeUnitId);
+                _pendingTurnAdvance = true;
+                if (_stateMachine is not null && _turnAdvanceState is not null)
+                {
+                    _stateMachine.ChangeState(_turnAdvanceState);
+                }
+                return;
             }
-            return;
-        }
 
             if (IsTargetInRange(activeNode, targetNode, abilityId))
             {
@@ -479,20 +527,9 @@ public partial class BattleSceneRoot : Node3D
         var targetCell = _pathfinding.WorldToCell(targetNode.GlobalPosition);
         var activeCell = _pathfinding.WorldToCell(activeNode.GlobalPosition);
 
-        // For now, only support simple diamond range; expand as abilities grow.
-        var candidateCells = new List<Vector3I>();
-        var maxRange = Mathf.Max(ability.Range.Min, ability.Range.Max);
-        for (int dx = -maxRange; dx <= maxRange; dx++)
-        {
-            for (int dz = -maxRange; dz <= maxRange; dz++)
-            {
-                var manhattan = Mathf.Abs(dx) + Mathf.Abs(dz);
-                if (manhattan < ability.Range.Min || manhattan > ability.Range.Max) continue;
-                var cell = new Vector3I(targetCell.X + dx, 0, targetCell.Z + dz);
-                if (cell == activeCell) continue;
-                candidateCells.Add(cell);
-            }
-        }
+        var candidateCells = GetCellsInRange(targetCell, ability.Range)
+            .Where(cell => cell != activeCell)
+            .ToList();
 
         var best = FindReachableClosestCell(_activeUnitId, activeNode.GlobalPosition, candidateCells);
         if (best is null) return false;
@@ -519,20 +556,9 @@ public partial class BattleSceneRoot : Node3D
         var targetCell = _pathfinding.WorldToCell(targetNode.GlobalPosition);
         var attackerCell = _pathfinding.WorldToCell(attackerNode.GlobalPosition);
 
-        var candidateCells = new List<Vector3I>();
-        var maxRange = Mathf.Max(ability.Range.Min, ability.Range.Max);
-        for (int dx = -maxRange; dx <= maxRange; dx++)
-        {
-            for (int dz = -maxRange; dz <= maxRange; dz++)
-            {
-                var manhattan = Mathf.Abs(dx) + Mathf.Abs(dz);
-                if (manhattan < ability.Range.Min || manhattan > ability.Range.Max) continue;
-                var cell = new Vector3I(targetCell.X + dx, 0, targetCell.Z + dz);
-                if (cell == attackerCell) continue;
-                if (cell.X < 0 || cell.Z < 0 || cell.X >= _mapContext.Size.X || cell.Z >= _mapContext.Size.Y) continue;
-                candidateCells.Add(cell);
-            }
-        }
+        var candidateCells = GetCellsInRange(targetCell, ability.Range)
+            .Where(cell => cell != attackerCell)
+            .ToList();
 
         var best = FindReachableClosestCell(attackerId, attackerNode.GlobalPosition, candidateCells);
         if (best is null) return false;
@@ -631,15 +657,48 @@ public partial class BattleSceneRoot : Node3D
             cell => ConvertSpawnToWorld(cell),
             _gimbal is null ? null : new CodexGame.Infrastructure.Adapters.CameraFollowerAdapter(_gimbal),
             new CodexGame.Infrastructure.Adapters.TweenRunnerAdapter(),
-            new CodexGame.Infrastructure.Adapters.NullPathVisualizer(),
+            new CodexGame.Infrastructure.Adapters.PathVisualizerAdapter(_pathfinding),
             GetMoveRange);
     }
 
     private void CreatePathfinding()
     {
         _pathfinding = new AstarPathfinding();
-        _pathfinding.SetupGrid(_mapSize.X, _mapSize.Y, TileSize);
+        _pathfinding.SetupGrid(_mapSize.X, _mapSize.Y, TileSize, TileHeight);
+        ApplyTerrainToPathfinding();
         AddChild(_pathfinding);
+    }
+
+    private void ApplyTerrainToPathfinding()
+    {
+        if (_pathfinding is null || _mapContext is null) return;
+
+        foreach (var cell in _mapContext.CellElevations)
+        {
+            var pos = new Vector3I(cell.Key.X, 0, cell.Key.Y);
+            _pathfinding.SetElevation(pos, cell.Value);
+        }
+
+        foreach (var entry in _mapContext.CellTypes)
+        {
+            var cell = new Vector3I(entry.Key.X, 0, entry.Key.Y);
+            var type = entry.Value.ToLowerInvariant();
+            switch (type)
+            {
+                case "water":
+                    _pathfinding.BlockCell(cell);
+                    break;
+                case "sand":
+                    _pathfinding.SetCellCost(cell, 1.5f);
+                    break;
+                case "stone":
+                    _pathfinding.SetCellCost(cell, 1.2f);
+                    break;
+                default:
+                    _pathfinding.SetCellCost(cell, 1f);
+                    break;
+            }
+        }
     }
 
     private void BuildMap()
@@ -783,8 +842,7 @@ public partial class BattleSceneRoot : Node3D
 
         var attackerCell = _pathfinding.WorldToCell(attacker.GlobalPosition);
         var targetCell = _pathfinding.WorldToCell(target.GlobalPosition);
-        var distance = Mathf.Abs(attackerCell.X - targetCell.X) + Mathf.Abs(attackerCell.Z - targetCell.Z);
-        return distance >= ability.Range.Min && distance <= ability.Range.Max;
+        return IsCellInRange(attackerCell, targetCell, ability.Range);
     }
 
     internal bool IsTargetInRange(string attackerId, string targetId, string abilityId)
@@ -824,15 +882,112 @@ public partial class BattleSceneRoot : Node3D
 
     private IEnumerable<Vector3I> GetCellsInRange(Vector3I center, RangePattern range)
     {
-        var max = range.Max;
-        var min = range.Min;
         var bounds = _mapContext?.Size ?? _mapSize;
+        foreach (var cell in EnumeratePatternCells(center, range.Shape, range.Min, range.Max, bounds, range.CustomMask))
+            yield return cell;
+    }
+
+    private IEnumerable<Vector3I> GetCellsInArea(Vector3I center, AreaPattern area)
+    {
+        var bounds = _mapContext?.Size ?? _mapSize;
+        foreach (var cell in EnumeratePatternCells(center, area.Shape, 0, area.Size, bounds, area.CustomMask))
+            yield return cell;
+    }
+
+    private bool IsCellInRange(Vector3I origin, Vector3I target, RangePattern range)
+    {
+        var dx = target.X - origin.X;
+        var dz = target.Z - origin.Z;
+        var manhattan = Mathf.Abs(dx) + Mathf.Abs(dz);
+        if (manhattan < range.Min || manhattan > range.Max) return false;
+
+        if (range.Shape == RangeShape.CustomMask)
+        {
+            var bounds = _mapContext?.Size ?? _mapSize;
+            return EnumerateMask(origin, bounds, range.CustomMask).Any(c => c == target);
+        }
+
+        return MatchesRangeShape(range.Shape, dx, dz);
+    }
+
+    private static IEnumerable<Vector3I> EnumeratePatternCells(Vector3I center, Enum shape, int min, int max, Vector2I bounds, int[]? customMask)
+    {
+        if (shape is RangeShape rangeShape && rangeShape == RangeShape.CustomMask)
+        {
+            foreach (var cell in EnumerateMask(center, bounds, customMask))
+                yield return cell;
+            yield break;
+        }
+
+        if (shape is AreaShape areaShape && areaShape == AreaShape.CustomMask)
+        {
+            foreach (var cell in EnumerateMask(center, bounds, customMask))
+                yield return cell;
+            yield break;
+        }
+
         for (int dx = -max; dx <= max; dx++)
         {
             for (int dz = -max; dz <= max; dz++)
             {
+                var cell = new Vector3I(center.X + dx, 0, center.Z + dz);
+                if (cell.X < 0 || cell.Z < 0 || cell.X >= bounds.X || cell.Z >= bounds.Y) continue;
+
                 var manhattan = Mathf.Abs(dx) + Mathf.Abs(dz);
                 if (manhattan < min || manhattan > max) continue;
+
+                if (shape is RangeShape rShape)
+                {
+                    if (!MatchesRangeShape(rShape, dx, dz)) continue;
+                }
+                else if (shape is AreaShape aShape)
+                {
+                    if (!MatchesAreaShape(aShape, dx, dz)) continue;
+                }
+
+                yield return cell;
+            }
+        }
+    }
+
+    private static bool MatchesRangeShape(RangeShape shape, int dx, int dz)
+    {
+        return shape switch
+        {
+            RangeShape.Single => true,
+            RangeShape.Diamond => true,
+            RangeShape.Line => dx == 0 || dz == 0,
+            _ => true
+        };
+    }
+
+    private static bool MatchesAreaShape(AreaShape shape, int dx, int dz)
+    {
+        return shape switch
+        {
+            AreaShape.Single => dx == 0 && dz == 0,
+            AreaShape.Diamond => true,
+            AreaShape.Line => dx == 0 || dz == 0,
+            AreaShape.Cross => dx == 0 || dz == 0,
+            _ => true
+        };
+    }
+
+    private static IEnumerable<Vector3I> EnumerateMask(Vector3I center, Vector2I bounds, int[]? mask)
+    {
+        if (mask is null || mask.Length == 0) yield break;
+
+        var size = (int)Mathf.Sqrt(mask.Length);
+        if (size * size != mask.Length) yield break;
+
+        var half = size / 2;
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                if (mask[y * size + x] == 0) continue;
+                var dx = x - half;
+                var dz = y - half;
                 var cell = new Vector3I(center.X + dx, 0, center.Z + dz);
                 if (cell.X < 0 || cell.Z < 0 || cell.X >= bounds.X || cell.Z >= bounds.Y) continue;
                 yield return cell;
@@ -960,11 +1115,135 @@ public partial class BattleSceneRoot : Node3D
 
     private string GetDisplayName(string unitId) => _units is null ? unitId : _units.GetDisplayName(unitId);
 
+    private float GetTargetTimeForProfile(QTEProfile profile)
+    {
+        var difficulty = profile.Difficulty <= 0 ? 1f : profile.Difficulty;
+        var duration = (profile.DurationSeconds > 0 ? profile.DurationSeconds : 1.5f) / difficulty;
+        return duration * 0.5f;
+    }
+
+    private bool IsTargetAllowed(string attackerId, string targetId)
+    {
+        if (_units is null) return false;
+        if (!_units.TryGetTeam(attackerId, out var attackerTeam)) return false;
+        if (!_units.TryGetTeam(targetId, out var targetTeam)) return false;
+        return attackerTeam != targetTeam;
+    }
+
+    private bool CanTargetUnitForAbility(string attackerId, string targetId, Ability ability)
+    {
+        if (_units is null) return false;
+        if (!_units.TryGetTeam(attackerId, out var attackerTeam)) return false;
+        if (!_units.TryGetTeam(targetId, out var targetTeam)) return false;
+
+        if (attackerTeam == targetTeam)
+            return ability.Tags.Contains(AbilityTag.Heal) || ability.Tags.Contains(AbilityTag.Buff);
+
+        return true;
+    }
+
+    private IEnumerable<string> GetTargetsForAbility(string attackerId, string targetId, Ability ability)
+    {
+        if (_units is null || _pathfinding is null) yield break;
+
+        var targetNode = _units.GetNode(targetId);
+        if (targetNode is null) yield break;
+
+        var targetCell = _pathfinding.WorldToCell(targetNode.GlobalPosition);
+        var cells = ability.AoE.Shape == AreaShape.Single
+            ? new[] { targetCell }
+            : GetCellsInArea(targetCell, ability.AoE);
+
+        var yielded = new HashSet<string>();
+        foreach (var cell in cells)
+        {
+            var unitId = GetUnitIdAtCell(cell);
+            if (string.IsNullOrEmpty(unitId)) continue;
+            if (unitId == attackerId) continue;
+            if (!CanTargetUnitForAbility(attackerId, unitId, ability)) continue;
+            if (yielded.Add(unitId))
+                yield return unitId;
+        }
+    }
+
+    private string? GetUnitIdAtCell(Vector3I cell)
+    {
+        if (_units is null || _pathfinding is null) return null;
+        foreach (var unitId in _units.GetAllUnitIds())
+        {
+            var node = _units.GetNode(unitId);
+            if (node is null) continue;
+            var nodeCell = _pathfinding.WorldToCell(node.GlobalPosition);
+            if (nodeCell == cell)
+                return unitId;
+        }
+        return null;
+    }
+
+    private Facing ComputeFacing(string attackerId, string targetId)
+    {
+        if (_units is null) return Facing.Front;
+        var attackerNode = _units.GetNode(attackerId);
+        var targetNode = _units.GetNode(targetId);
+        if (attackerNode is null || targetNode is null) return Facing.Front;
+
+        var defenderForward = _units.GetFacing(targetId);
+        var dirToAttacker = (attackerNode.GlobalPosition - targetNode.GlobalPosition).Normalized();
+        var dot = defenderForward.Dot(dirToAttacker);
+        if (dot < -0.5f) return Facing.Back;
+        if (dot > 0.5f) return Facing.Front;
+        return Facing.Side;
+    }
+
+    private void TryApplyKnockback(string attackerId, string targetId)
+    {
+        if (_units is null || _pathfinding is null || _mapContext is null) return;
+        var attackerNode = _units.GetNode(attackerId);
+        var targetNode = _units.GetNode(targetId);
+        if (attackerNode is null || targetNode is null) return;
+
+        var attackerCell = _pathfinding.WorldToCell(attackerNode.GlobalPosition);
+        var targetCell = _pathfinding.WorldToCell(targetNode.GlobalPosition);
+        var dir = new Vector3I(
+            Math.Sign(targetCell.X - attackerCell.X),
+            0,
+            Math.Sign(targetCell.Z - attackerCell.Z));
+        if (dir == Vector3I.Zero) return;
+
+        var dest = targetCell + dir;
+        if (dest.X < 0 || dest.Z < 0 || dest.X >= _mapContext.Size.X || dest.Z >= _mapContext.Size.Y) return;
+        if (_units.IsCellOccupied(_pathfinding, dest, targetId)) return;
+        if (_mapContext.CellTypes.TryGetValue(new Vector2I(dest.X, dest.Z), out var type) &&
+            type.Equals("water", System.StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var world = ConvertSpawnToWorld(new Vector2I(dest.X, dest.Z));
+        targetNode.GlobalPosition = world;
+    }
+
+    internal AbilityOption GetAbilityOption(string attackerId, string abilityId)
+    {
+        var label = GetAbilityLabel(abilityId);
+        var enabled = HasEnoughMp(attackerId, abilityId);
+        return new AbilityOption(abilityId, label, enabled);
+    }
+
     internal string GetAbilityLabel(string abilityId)
     {
-        if (_battleManager is not null && _battleManager.TryGetAbility(abilityId, out var ability) && !string.IsNullOrEmpty(ability.Name))
-            return ability.Name;
+        if (_battleManager is not null && _battleManager.TryGetAbility(abilityId, out var ability))
+        {
+            var name = string.IsNullOrEmpty(ability.Name) ? ability.Id : ability.Name;
+            return $"{name} (MP {ability.MPCost})";
+        }
         return abilityId;
+    }
+
+    private bool HasEnoughMp(string unitId, string abilityId)
+    {
+        if (_battleManager is null) return false;
+        if (!_battleManager.TryGetAbility(abilityId, out var ability)) return false;
+        if (!_battleManager.TryGetUnit(unitId, out var state) || state is null) return false;
+        return state.CurrentMP >= ability.MPCost;
     }
 
     internal Color GetColorForUnit(string unitId) => _units is null ? Colors.White : _units.GetColor(unitId);

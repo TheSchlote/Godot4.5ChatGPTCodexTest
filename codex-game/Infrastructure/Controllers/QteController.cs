@@ -8,36 +8,41 @@ namespace CodexGame.Infrastructure.Controllers;
 internal sealed class QteController
 {
     private readonly QteUi _ui;
-    private readonly float _duration;
-    private readonly float _critWindow;
-    private readonly float _greatWindow;
-    private readonly float _goodWindow;
+    private readonly float _defaultDuration;
+    private readonly float _defaultCritWindow;
+    private float _duration;
+    private float _critWindow;
+    private float _greatWindow;
+    private float _goodWindow;
 
     private float _timer;
     private string? _attackerId;
     private string? _targetId;
 
-    public QteController(QteUi ui, float duration = 1.5f, float critWindow = 0.1f)
+    public QteController(QteUi ui, float defaultDuration = 1.5f, float defaultCritWindow = 0.1f)
     {
         _ui = ui;
-        _duration = duration;
-        _critWindow = critWindow;
+        _defaultDuration = defaultDuration;
+        _defaultCritWindow = defaultCritWindow;
+        _duration = _defaultDuration;
+        _critWindow = _defaultCritWindow;
         _greatWindow = _critWindow * 2.5f;
         _goodWindow = _critWindow * 4f;
         TargetTime = _duration * 0.5f;
     }
 
     public bool IsActive { get; private set; }
-    public float TargetTime { get; }
+    public float TargetTime { get; private set; }
 
     public event Action<string, string, TimingBarInput>? Completed;
 
-    public void Begin(string attackerId, string targetId)
+    public void Begin(string attackerId, string targetId, QTEProfile profile)
     {
         IsActive = true;
         _timer = 0f;
         _attackerId = attackerId;
         _targetId = targetId;
+        ConfigureFromProfile(profile);
         _ui.Configure(_duration, TargetTime, _critWindow, _greatWindow, _goodWindow, "Timing! Press Space");
     }
 
@@ -79,5 +84,18 @@ internal sealed class QteController
         var input = new TimingBarInput(TargetTime, pressTime);
         Completed?.Invoke(_attackerId, _targetId, input);
         Cancel();
+    }
+
+    private void ConfigureFromProfile(QTEProfile profile)
+    {
+        var difficulty = profile.Difficulty <= 0 ? 1f : profile.Difficulty;
+        var baseDuration = profile.DurationSeconds > 0 ? profile.DurationSeconds : _defaultDuration;
+        var baseCrit = profile.CritWindow > 0 ? profile.CritWindow : _defaultCritWindow;
+
+        _duration = baseDuration / difficulty;
+        _critWindow = baseCrit / difficulty;
+        _greatWindow = _critWindow * 2.5f;
+        _goodWindow = _critWindow * 4f;
+        TargetTime = _duration * 0.5f;
     }
 }

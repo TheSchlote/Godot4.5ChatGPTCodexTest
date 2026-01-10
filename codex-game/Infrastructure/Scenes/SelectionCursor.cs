@@ -74,6 +74,7 @@ public partial class SelectionCursor : Node3D
 
         var targetCell = PositionToCell(Position + inputDirection * TileSize);
         targetCell = ClampToMap(targetCell);
+        _targetGridPosition = CellToPosition(targetCell);
 
         _velocity = inputDirection * MoveSpeed;
         _shouldSnap = true;

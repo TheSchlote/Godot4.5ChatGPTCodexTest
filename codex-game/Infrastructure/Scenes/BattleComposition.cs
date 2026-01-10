@@ -16,22 +16,29 @@ internal sealed class BattleComposition
     private readonly MapBuilder _mapBuilder = new();
     private readonly UnitContentLoader _unitLoader = new();
 
-    internal sealed record MapContext(Vector3 Center, Vector2I Size, Dictionary<Vector2I, int> CellElevations, MapData? MapData);
+    internal sealed record MapContext(
+        Vector3 Center,
+        Vector2I Size,
+        Dictionary<Vector2I, int> CellElevations,
+        Dictionary<Vector2I, string> CellTypes,
+        MapData? MapData);
 
     public MapContext BuildMap(Node mapRoot, string mapPath, Vector2I defaultSize, float tileSize, float tileHeight)
     {
         if (_mapLoader.TryLoad(mapPath, out var mapData))
         {
             var elevations = mapData.Cells.ToDictionary(c => new Vector2I(c.X, c.Y), c => c.Elevation);
+            var types = mapData.Cells.ToDictionary(c => new Vector2I(c.X, c.Y), c => c.Type);
             var size = new Vector2I(mapData.Width, mapData.Height);
             var center = _mapBuilder.BuildFromMapData(mapRoot, mapData, tileSize, tileHeight).Center;
-            return new MapContext(center, size, elevations, mapData);
+            return new MapContext(center, size, elevations, types, mapData);
         }
 
         GD.Print($"Falling back to flat grid because map could not be loaded from {mapPath}.");
         var flatElevations = new Dictionary<Vector2I, int>();
+        var flatTypes = new Dictionary<Vector2I, string>();
         var flatCenter = _mapBuilder.BuildFlatGrid(mapRoot, defaultSize, tileSize, tileHeight).Center;
-        return new MapContext(flatCenter, defaultSize, flatElevations, null);
+        return new MapContext(flatCenter, defaultSize, flatElevations, flatTypes, null);
     }
 
     public void SpawnUnits(MapContext context, UnitPresenter units, float tileSize, float tileHeight, string unitsPath)
@@ -44,7 +51,7 @@ internal sealed class BattleComposition
             var state = CreateUnitState(unit.Blueprint);
             var position = ResolveSpawnPosition(unit, context, spawnCursorByTeam, tileSize, tileHeight);
             var node = units.CreateUnitNode(state.Id, unit.Color, position);
-            units.RegisterUnit(state, node, unit.Team, unit.Blueprint.Abilities, unit.Blueprint.Name, unit.Color);
+            units.RegisterUnit(state, node, unit.Team, unit.Blueprint.Abilities, unit.Blueprint.Name, unit.Color, unit.Blueprint.AIProfileId);
         }
     }
 
@@ -94,5 +101,5 @@ internal sealed class BattleComposition
     }
 
     private static UnitState CreateUnitState(UnitBlueprint blueprint) =>
-        new(blueprint.Id, blueprint.BaseStats, blueprint.Affinity, blueprint.MoveRange);
+        new(blueprint.Id, blueprint.BaseStats, blueprint.Affinity, blueprint.MoveRange, blueprint.DefaultQTE);
 }
